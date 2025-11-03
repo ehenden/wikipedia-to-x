@@ -12,6 +12,11 @@ import requests
 import tweepy
 from dotenv import load_dotenv
 
+# Constants
+TWITTER_CHAR_LIMIT = 280
+TRUNCATION_OVERHEAD = 5  # Space for newlines and ellipsis
+DEFAULT_POST_INTERVAL = 3600  # 1 hour in seconds
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -24,12 +29,23 @@ def load_config():
     """Load configuration from environment variables."""
     load_dotenv()
     
+    # Parse post interval with error handling
+    post_interval_str = os.getenv('POST_INTERVAL', str(DEFAULT_POST_INTERVAL))
+    try:
+        post_interval = int(post_interval_str)
+        if post_interval <= 0:
+            raise ValueError("POST_INTERVAL must be positive")
+    except ValueError as e:
+        logger.error(f"Invalid POST_INTERVAL value '{post_interval_str}': {e}")
+        logger.info(f"Using default interval: {DEFAULT_POST_INTERVAL} seconds")
+        post_interval = DEFAULT_POST_INTERVAL
+    
     config = {
         'api_key': os.getenv('TWITTER_API_KEY'),
         'api_secret': os.getenv('TWITTER_API_SECRET'),
         'access_token': os.getenv('TWITTER_ACCESS_TOKEN'),
         'access_token_secret': os.getenv('TWITTER_ACCESS_TOKEN_SECRET'),
-        'post_interval': int(os.getenv('POST_INTERVAL', 3600))
+        'post_interval': post_interval
     }
     
     # Validate required credentials
@@ -86,10 +102,10 @@ def format_tweet(article):
     # Twitter will automatically create a preview card for the URL
     tweet = f"{article['title']}\n\n{article['url']}"
     
-    # Ensure tweet doesn't exceed Twitter's character limit (280)
-    if len(tweet) > 280:
+    # Ensure tweet doesn't exceed Twitter's character limit
+    if len(tweet) > TWITTER_CHAR_LIMIT:
         # Truncate title to fit
-        max_title_length = 280 - len(article['url']) - 5  # 5 for newlines and ellipsis
+        max_title_length = TWITTER_CHAR_LIMIT - len(article['url']) - TRUNCATION_OVERHEAD
         truncated_title = article['title'][:max_title_length] + "..."
         tweet = f"{truncated_title}\n\n{article['url']}"
     
