@@ -100,7 +100,8 @@ class TestBotFunctions(unittest.TestCase):
         self.assertEqual(config['post_interval'], 3600)
 
     @patch.dict('os.environ', {}, clear=True)
-    def test_load_config_missing_credentials(self):
+    @patch('bot.load_dotenv')
+    def test_load_config_missing_credentials(self, _mock_load_dotenv):
         """Test configuration loading with missing credentials."""
         with self.assertRaises(SystemExit):
             bot.load_config()

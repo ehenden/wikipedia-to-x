@@ -41,3 +41,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Bot state (history cache)
+.bot_state/

@@ -1,15 +1,15 @@
 # X-Random-Wikipedia-Bot
 
-A Python bot that automatically posts random Turkish Wikipedia article links to X (Twitter) at scheduled intervals.
+A Python bot that posts Turkish Wikipedia articles to X (Twitter) at scheduled intervals.
 
 ## Features
 
-- 🤖 Automatically fetches random Turkish Wikipedia articles
-- 🐦 Posts article links to X (Twitter) with proper formatting
-- ⏰ Configurable posting intervals
-- 🔒 Secure credential management using environment variables
-- 📝 Comprehensive logging
-- 🔄 Continuous operation with error handling
+- Prefers trending topics, with random fallback
+- Filters out low-quality pages (short extract, short page, no thumbnail)
+- Avoids repeats with a lightweight local history file
+- Posts title + short extract + URL, with thumbnail as media
+- Configurable posting intervals
+- Dry-run mode for safe local testing
 
 ## Requirements
 
@@ -27,7 +27,7 @@ cd X-Random-Wikipedia-Bot
 
 2. Install required dependencies:
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 3. Set up your environment variables:
@@ -42,6 +42,9 @@ pip install -r requirements.txt
      TWITTER_ACCESS_TOKEN=your_access_token_here
      TWITTER_ACCESS_TOKEN_SECRET=your_access_token_secret_here
      POST_INTERVAL=3600
+     HISTORY_DAYS=60
+     TOPIC_DAYS=14
+     RN_MINSIZE=8000
      ```
 
 ## Getting X API Credentials
@@ -64,7 +67,7 @@ python bot.py
 ```
 
 The bot will:
-- Post a random Turkish Wikipedia article
+- Post a Turkish Wikipedia article
 - Wait for the specified interval (default: 1 hour)
 - Repeat indefinitely
 
@@ -80,6 +83,11 @@ This is useful for:
 - Running via cron jobs
 - One-time posts
 
+### Dry-run (no tweet is posted)
+```bash
+python bot.py --once --dry-run
+```
+
 ## Configuration
 
 Edit the `.env` file to configure the bot:
@@ -89,15 +97,18 @@ Edit the `.env` file to configure the bot:
 - `TWITTER_ACCESS_TOKEN`: Your access token
 - `TWITTER_ACCESS_TOKEN_SECRET`: Your access token secret
 - `POST_INTERVAL`: Time between posts in seconds (default: 3600 = 1 hour)
+- `HISTORY_DAYS`: Do not repeat the same article for N days (default: 60)
+- `TOPIC_DAYS`: Reduce topic repetition for N days (default: 14)
+- `RN_MINSIZE`: Random page minimum size in bytes (default: 8000)
 
 ## How It Works
 
-1. The bot connects to the Turkish Wikipedia API (`tr.wikipedia.org`)
-2. Fetches a random article using the REST API endpoint
-3. Extracts the article title and URL
-4. Formats a tweet with the article information
-5. Posts the tweet to X using the Twitter API
-6. Waits for the configured interval before repeating
+1. Pulls a pool of trending articles from Wikimedia pageviews
+2. Samples candidates, fetches details (extract, thumbnail, length, URL)
+3. Filters by quality and recent history
+4. Scores and selects a candidate with randomness
+5. Posts title + short extract + URL with thumbnail as media
+6. Falls back to random candidates if needed
 
 ## Scheduling with Cron
 
@@ -116,6 +127,12 @@ chmod +x bot.py
 # Post every 6 hours
 0 */6 * * * cd /path/to/X-Random-Wikipedia-Bot && /usr/bin/python3 bot.py --once
 ```
+
+## History Cache
+
+The bot stores a small local history file in `.bot_state/history.json` to avoid repeats.
+This folder is ignored by git. In GitHub Actions, caching `.bot_state` preserves history
+between runs.
 
 ## Logging
 
