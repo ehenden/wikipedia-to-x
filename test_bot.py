@@ -4,9 +4,9 @@ Simple tests for the bot functionality.
 Tests that don't require API access.
 """
 
-import sys
 import unittest
 from unittest.mock import Mock, patch
+import requests
 import bot
 
 
@@ -21,23 +21,24 @@ class TestBotFunctions(unittest.TestCase):
             'extract': 'Some description'
         }
         tweet = bot.format_tweet(article)
-        
+
         self.assertIn('Test Article', tweet)
+        self.assertIn('Some description', tweet)
         self.assertIn('https://tr.wikipedia.org/wiki/Test', tweet)
         self.assertLessEqual(len(tweet), 280)
 
-    def test_format_tweet_long_title(self):
-        """Test tweet formatting with very long title."""
+    def test_format_tweet_long_extract(self):
+        """Test tweet formatting with very long extract."""
         article = {
-            'title': 'A' * 300,  # Very long title
+            'title': 'Test Article',
             'url': 'https://tr.wikipedia.org/wiki/Test',
-            'extract': 'Some description'
+            'extract': 'A' * 600
         }
         tweet = bot.format_tweet(article)
-        
+
         self.assertIn('https://tr.wikipedia.org/wiki/Test', tweet)
         self.assertLessEqual(len(tweet), 280)
-        self.assertIn('...', tweet)  # Should be truncated
+        self.assertIn('...', tweet)
 
     def test_format_tweet_contains_url(self):
         """Test that formatted tweet contains the URL."""
@@ -47,7 +48,7 @@ class TestBotFunctions(unittest.TestCase):
             'extract': 'Description'
         }
         tweet = bot.format_tweet(article)
-        
+
         self.assertIn('https://tr.wikipedia.org/wiki/Page', tweet)
 
     @patch('bot.requests.get')
@@ -55,30 +56,30 @@ class TestBotFunctions(unittest.TestCase):
         """Test successful article fetch."""
         mock_response = Mock()
         mock_response.json.return_value = {
-            'title': 'Türkiye',
+            'title': 'Turkiye',
             'content_urls': {
                 'desktop': {
                     'page': 'https://tr.wikipedia.org/wiki/T%C3%BCrkiye'
                 }
             },
-            'extract': 'Türkiye description'
+            'extract': 'Turkiye description'
         }
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
-        
+
         article = bot.get_random_turkish_wikipedia_article()
-        
+
         self.assertIsNotNone(article)
-        self.assertEqual(article['title'], 'Türkiye')
+        self.assertEqual(article['title'], 'Turkiye')
         self.assertIn('wikipedia.org', article['url'])
 
     @patch('bot.requests.get')
     def test_get_random_article_failure(self, mock_get):
         """Test article fetch failure handling."""
-        mock_get.side_effect = Exception("Network error")
-        
+        mock_get.side_effect = requests.exceptions.RequestException("Network error")
+
         article = bot.get_random_turkish_wikipedia_article()
-        
+
         self.assertIsNone(article)
 
     @patch.dict('os.environ', {
@@ -91,7 +92,7 @@ class TestBotFunctions(unittest.TestCase):
     def test_load_config_success(self):
         """Test successful configuration loading."""
         config = bot.load_config()
-        
+
         self.assertEqual(config['api_key'], 'test_key')
         self.assertEqual(config['api_secret'], 'test_secret')
         self.assertEqual(config['access_token'], 'test_token')
