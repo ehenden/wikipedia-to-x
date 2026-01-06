@@ -758,7 +758,18 @@ def post_tweet(client, tweet_text, media_id=None):
         logger.info(f"Successfully posted tweet: {tweet_text[:50]}...")
         return True
     except tweepy.TweepyException as e:
-        logger.error(f"Error posting tweet: {e}")
+        response = getattr(e, 'response', None)
+        status_code = getattr(response, 'status_code', None)
+        body = getattr(response, 'text', None)
+        headers = getattr(response, 'headers', None) or {}
+        request_id = headers.get('x-request-id')
+        logger.error(
+            "Error posting tweet: %s | status=%s request_id=%s body=%s",
+            e,
+            status_code,
+            request_id,
+            body
+        )
         return False
 
 
