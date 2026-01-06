@@ -24,6 +24,15 @@ jobs:
             bot-state-
       - name: Install deps
         run: pip install -r requirements.txt
+      - name: Show commit and snippet
+        run: |
+          git rev-parse --short HEAD
+          python - <<'PY'
+          import inspect, bot
+          import re
+          src = inspect.getsource(bot.post_tweet)
+          print(re.sub(r"\s+", " ", src)[:300])
+          PY
       - name: Post once
         env:
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
