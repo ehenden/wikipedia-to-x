@@ -763,12 +763,16 @@ def post_tweet(client, tweet_text, media_id=None):
         body = getattr(response, 'text', None)
         headers = getattr(response, 'headers', None) or {}
         request_id = headers.get('x-request-id')
+        api_errors = getattr(e, 'api_errors', None)
+        errors = getattr(e, 'errors', None)
         logger.error(
-            "Error posting tweet: %s | status=%s request_id=%s body=%s",
+            "Error posting tweet: %s | status=%s request_id=%s body=%s api_errors=%s errors=%s",
             e,
             status_code,
             request_id,
-            body
+            body,
+            api_errors,
+            errors
         )
         return False
 
