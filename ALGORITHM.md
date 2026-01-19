@@ -169,7 +169,7 @@ def score_article(article):
     # Görüntülenme sayısı (sadece trend makaleler için)
     views = article.get('views') or 0
     if views > 0:
-        score += min(3.0, log10(views + 1))  # Maksimum +3
+        score += min(3.0, math.log10(views + 1))  # Maksimum +3
     
     return score
 ```
@@ -364,7 +364,7 @@ Bot davranışı environment variables ile ayarlanabilir:
 | `TREND_POOL_SIZE` | 500 | Trend makale havuz boyutu |
 | `TREND_SAMPLE_SIZE` | 60 | Örneklenecek trend aday sayısı |
 | `TREND_PICK_TOP_K` | 15 | Trend için en iyi N aday |
-| `TREND_DAYS` | 3 | Kaç gün geriye gidileceği (1-3 arası rastgele) |
+| `TREND_DAYS` | 3 | Kaç gün geriye gidileceği (1 ile TREND_DAYS arası rastgele) |
 | `RANDOM_SAMPLE_SIZE` | 20 | Örneklenecek rastgele sayfa sayısı |
 | `RANDOM_PICK_TOP_K` | 5 | Rastgele için en iyi N aday |
 | `RANDOM_ATTEMPTS` | 3 | Rastgele seçim deneme sayısı |
