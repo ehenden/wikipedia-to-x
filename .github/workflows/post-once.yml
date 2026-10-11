@@ -1,9 +1,14 @@
-name: Post Random Turkish Wikipedia
+name: Publish Wikipedia
 
 on:
   schedule:
     - cron: '17 */3 * * *' # every 3 hours, away from peak load
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Preview without publishing or changing history
+        type: boolean
+        default: false
 
 jobs:
   post:
@@ -27,13 +32,21 @@ jobs:
         run: python scripts/github_state.py restore
       - name: Post once
         env:
-          PUBLISH_PROVIDER: buffer
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
-          HISTORY_DAYS: 60
-          TOPIC_DAYS: 14
-          RN_MINSIZE: 8000
-        run: python bot.py --once
+          WIKI_LANGUAGE: ${{ vars.WIKI_LANGUAGE || 'tr' }}
+          ARTICLE_SOURCE: ${{ vars.ARTICLE_SOURCE || 'popular' }}
+          WIKI_CATEGORY: ${{ vars.WIKI_CATEGORY }}
+          HISTORY_DAYS: ${{ vars.HISTORY_DAYS || '60' }}
+          TOPIC_DAYS: ${{ vars.TOPIC_DAYS || '14' }}
+          RN_MINSIZE: ${{ vars.RN_MINSIZE || '8000' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python bot.py --dry-run
+          else
+            python bot.py
+          fi
       - name: Save durable article history
         if: always()
         env:

@@ -14,17 +14,6 @@ import bot
 class TestBotFunctions(unittest.TestCase):
     """Test bot functions without external API calls."""
 
-    def make_twitter_exception(self, message, status_code=None, headers=None, body=None):
-        exc = bot.tweepy.TweepyException(message)
-        if status_code is not None:
-            response = Mock()
-            response.status_code = status_code
-            response.text = body or message
-            response.headers = headers or {}
-            exc.response = response
-        exc.api_errors = []
-        exc.errors = None
-        return exc
 
     @patch('bot.requests.post')
     def test_buffer_acceptance_with_image_and_url(self, post):
@@ -69,54 +58,126 @@ class TestBotFunctions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = directory + '/history.json'
             with patch.dict('os.environ', {'HISTORY_FILE': path}):
-                self.assertFalse(bot.run_bot_once(None, None, config={'publish_provider': 'buffer'}))
+                self.assertFalse(bot.run_bot_once({}))
                 entries = bot.load_history(path)
         self.assertEqual(entries[0]['buffer_submission'], 'failed_or_unknown')
         self.assertIsNone(entries[0]['buffer_post_id'])
 
     @patch('bot.load_dotenv')
     @patch.dict('os.environ', {
-        'PUBLISH_PROVIDER': 'buffer', 'BUFFER_API_KEY': 'test-key',
+        'BUFFER_API_KEY': 'test-key',
         'BUFFER_CHANNEL_ID': 'channel-123',
     }, clear=True)
     def test_buffer_does_not_require_twitter_keys(self, _dotenv):
-        self.assertEqual(bot.load_config()['publish_provider'], 'buffer')
+        self.assertEqual(bot.load_config()['buffer_channel_id'], 'channel-123')
 
-    def test_format_tweet_normal(self):
+    @patch('bot.load_dotenv')
+    def test_selection_configuration_validation(self, _dotenv):
+        with patch.dict('os.environ', {'WIKI_LANGUAGE': 'en', 'ARTICLE_SOURCE': 'category',
+                                      'WIKI_CATEGORY': 'Category:Physics'}, clear=True):
+            self.assertEqual(bot.load_config(False)['wiki_language'], 'en')
+            self.assertEqual(bot.wikipedia_url('/w/api.php'), 'https://en.wikipedia.org/w/api.php')
+        for values in [{'WIKI_LANGUAGE': 'en/invalid'}, {'ARTICLE_SOURCE': 'invalid'},
+                       {'ARTICLE_SOURCE': 'category', 'WIKI_CATEGORY': ''}]:
+            with patch.dict('os.environ', values, clear=True):
+                with self.assertRaises(ValueError):
+                    bot.load_config(False)
+
+    def test_history_is_language_scoped_and_legacy_is_turkish(self):
+        entries = [{'pageid': 1, 'title': 'Legacy'},
+                   {'pageid': 2, 'title': 'English', 'wiki_language': 'en'}]
+        with patch.dict('os.environ', {'WIKI_LANGUAGE': 'en'}):
+            self.assertEqual(bot.build_history_indexes(entries, 14)[1], {2})
+        with patch.dict('os.environ', {'WIKI_LANGUAGE': 'tr'}):
+            self.assertEqual(bot.build_history_indexes(entries, 14)[1], {1})
+
+    @patch('bot.get_page_details_by_pageids', return_value=[])
+    @patch('bot.requests.get')
+    def test_category_pagination_stays_bounded(self, get, details):
+        get.return_value.json.return_value = {
+            'query': {'categorymembers': [{'pageid': 5, 'title': 'Example'}]},
+            'continue': {'cmcontinue': 'next', 'continue': '-||'},
+        }
+        self.assertIsNone(bot.get_category_article('Category:Physics', set(), set(), set()))
+        self.assertEqual(get.call_count, 3)
+        self.assertEqual(get.call_args.kwargs['params']['cmnamespace'], 0)
+        self.assertEqual(get.call_args.kwargs['params']['cmcontinue'], 'next')
+        details.assert_called_once()
+
+    @patch('bot.get_random_article')
+    @patch('bot.get_filtered_random_article')
+    @patch('bot.get_category_article', return_value=None)
+    def test_empty_category_does_not_publish_unrelated_content(self, category, random, summary):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict('os.environ', {'HISTORY_FILE': directory + '/history.json'}):
+                self.assertFalse(bot.run_bot_once({'article_source': 'category',
+                                                  'wiki_category': 'Category:Physics'}, True))
+        random.assert_not_called()
+        summary.assert_not_called()
+
+    @patch('bot.save_history')
+    @patch('bot.post_to_buffer')
+    @patch('bot.get_trending_article', return_value={
+        'title': 'Preview', 'url': 'https://en.wikipedia.org/wiki/Preview', 'extract': 'Example'})
+    def test_dry_run_does_not_publish_or_write_history(self, fetch, publish, save):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict('os.environ', {'HISTORY_FILE': directory + '/history.json'}):
+                self.assertTrue(bot.run_bot_once({}, True))
+        publish.assert_not_called()
+        save.assert_not_called()
+
+    @patch('bot.get_trending_article')
+    @patch('bot.get_filtered_random_article', return_value={
+        'title': 'Random', 'url': 'https://en.wikipedia.org/wiki/Random'})
+    def test_random_mode_skips_pageview_query(self, random, popular):
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.dict('os.environ', {'HISTORY_FILE': directory + '/history.json'}):
+                self.assertTrue(bot.run_bot_once({'article_source': 'random'}, True))
+        popular.assert_not_called()
+
+    def test_cjk_post_preserves_long_source_and_stays_within_weight_limit(self):
+        url = 'https://ja.wikipedia.org/wiki/' + '%E6%AD%B4' * 100
+        post = bot.format_post({'title': '歴史' * 200, 'extract': '世界' * 300, 'url': url})
+        body, source = post.rsplit('\n\n', 1)
+        self.assertEqual(source, url)
+        # Independent conservative count; CJK characters weigh two on X.
+        self.assertLessEqual(sum(1 if ord(c) < 128 else 2 for c in body) + 2 + 23, 280)
+
+    def test_format_post_normal(self):
         """Test tweet formatting with normal length article."""
         article = {
             'title': 'Test Article',
             'url': 'https://tr.wikipedia.org/wiki/Test',
             'extract': 'Some description'
         }
-        tweet = bot.format_tweet(article)
+        tweet = bot.format_post(article)
 
         self.assertIn('Test Article', tweet)
         self.assertIn('Some description', tweet)
         self.assertIn('https://tr.wikipedia.org/wiki/Test', tweet)
-        self.assertLessEqual(len(tweet), 280)
+        self.assertLessEqual(len(tweet.rsplit('\n\n', 1)[0]) + 2 + 23, 280)
 
-    def test_format_tweet_long_extract(self):
+    def test_format_post_long_extract(self):
         """Test tweet formatting with very long extract."""
         article = {
             'title': 'Test Article',
             'url': 'https://tr.wikipedia.org/wiki/Test',
             'extract': 'A' * 600
         }
-        tweet = bot.format_tweet(article)
+        tweet = bot.format_post(article)
 
         self.assertIn('https://tr.wikipedia.org/wiki/Test', tweet)
-        self.assertLessEqual(len(tweet), 280)
+        self.assertLessEqual(len(tweet.rsplit('\n\n', 1)[0]) + 2 + 23, 280)
         self.assertIn('...', tweet)
 
-    def test_format_tweet_contains_url(self):
+    def test_format_post_contains_url(self):
         """Test that formatted tweet contains the URL."""
         article = {
             'title': 'Short Title',
             'url': 'https://tr.wikipedia.org/wiki/Page',
             'extract': 'Description'
         }
-        tweet = bot.format_tweet(article)
+        tweet = bot.format_post(article)
 
         self.assertIn('https://tr.wikipedia.org/wiki/Page', tweet)
 
@@ -136,7 +197,7 @@ class TestBotFunctions(unittest.TestCase):
         mock_response.raise_for_status = Mock()
         mock_get.return_value = mock_response
 
-        article = bot.get_random_turkish_wikipedia_article()
+        article = bot.get_random_article()
 
         self.assertIsNotNone(article)
         self.assertEqual(article['title'], 'Turkiye')
@@ -147,26 +208,10 @@ class TestBotFunctions(unittest.TestCase):
         """Test article fetch failure handling."""
         mock_get.side_effect = requests.exceptions.RequestException("Network error")
 
-        article = bot.get_random_turkish_wikipedia_article()
+        article = bot.get_random_article()
 
         self.assertIsNone(article)
 
-    @patch.dict('os.environ', {
-        'TWITTER_API_KEY': 'test_key',
-        'TWITTER_API_SECRET': 'test_secret',
-        'TWITTER_ACCESS_TOKEN': 'test_token',
-        'TWITTER_ACCESS_TOKEN_SECRET': 'test_token_secret',
-        'POST_INTERVAL': '3600'
-    })
-    def test_load_config_success(self):
-        """Test successful configuration loading."""
-        config = bot.load_config()
-
-        self.assertEqual(config['api_key'], 'test_key')
-        self.assertEqual(config['api_secret'], 'test_secret')
-        self.assertEqual(config['access_token'], 'test_token')
-        self.assertEqual(config['access_token_secret'], 'test_token_secret')
-        self.assertEqual(config['post_interval'], 3600)
 
     @patch.dict('os.environ', {}, clear=True)
     @patch('bot.load_dotenv')
@@ -174,59 +219,6 @@ class TestBotFunctions(unittest.TestCase):
         """Test configuration loading with missing credentials."""
         with self.assertRaises(SystemExit):
             bot.load_config()
-
-    @patch('bot.time.sleep')
-    @patch.dict('os.environ', {'X_POST_MAX_ATTEMPTS': '3'}, clear=False)
-    def test_post_tweet_retries_transient_503_then_succeeds(self, mock_sleep):
-        """Test transient 503 errors are retried before succeeding."""
-        client = Mock()
-        client.create_tweet.side_effect = [
-            self.make_twitter_exception('Service Unavailable', status_code=503),
-            Mock(),
-        ]
-
-        result = bot.post_tweet(client, 'Hello world')
-
-        self.assertTrue(result)
-        self.assertEqual(client.create_tweet.call_count, 2)
-        mock_sleep.assert_called_once_with(5)
-
-    @patch('bot.time.sleep')
-    @patch.dict('os.environ', {'X_POST_MAX_ATTEMPTS': '3'}, clear=False)
-    def test_post_tweet_does_not_retry_non_retryable_error(self, mock_sleep):
-        """Test non-retryable errors fail immediately."""
-        client = Mock()
-        client.create_tweet.side_effect = self.make_twitter_exception(
-            'Forbidden',
-            status_code=403,
-        )
-
-        result = bot.post_tweet(client, 'Hello world')
-
-        self.assertFalse(result)
-        self.assertEqual(client.create_tweet.call_count, 1)
-        mock_sleep.assert_not_called()
-
-    @patch('bot.time.sleep')
-    @patch.dict('os.environ', {'X_POST_MAX_ATTEMPTS': '3'}, clear=False)
-    def test_post_tweet_uses_retry_after_header(self, mock_sleep):
-        """Test Retry-After header overrides exponential backoff."""
-        client = Mock()
-        client.create_tweet.side_effect = [
-            self.make_twitter_exception(
-                'Too Many Requests',
-                status_code=429,
-                headers={'retry-after': '12'},
-            ),
-            Mock(),
-        ]
-
-        result = bot.post_tweet(client, 'Hello world')
-
-        self.assertTrue(result)
-        self.assertEqual(client.create_tweet.call_count, 2)
-        mock_sleep.assert_called_once_with(12.0)
-
 
 if __name__ == '__main__':
     # Run tests

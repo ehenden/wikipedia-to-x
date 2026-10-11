@@ -1,42 +1,28 @@
-# AGENTS.md
+# Agent Instructions
 
-GUIDELINE (project)
+## Scope
 
-Goal
-- Post a Turkish Wikipedia article to X with minimal effort.
-- Prefer trending topics, keep randomness, avoid repeats.
-- No database; use a small local history file for de-duplication.
+Keep this a small, configurable Wikipedia-to-X bot. Buffer is the only publishing
+provider. Each invocation runs one cycle; GitHub Actions supplies the schedule.
+Defaults are Turkish Wikipedia and popular selection with random fallback.
+Category mode must stay within direct category members and fail without unrelated
+fallback. Preserve quality filters, language-aware history, and source attribution.
 
-Scope
-- Fetch: trending candidates from Wikimedia pageviews; fall back to random.
-- Random candidates use `action=query&list=random` with size filter.
-- Details: `action=query` for extract, thumbnail, page length, and URL.
-- Post: title + short extract + URL, with thumbnail as media when available.
-- Scheduling: simple sleep loop; support `--once` for cron.
+## Implementation
 
-Configuration
-- Read from `.env` (via dotenv) or environment variables.
-- Required: `TWITTER_API_KEY`, `TWITTER_API_SECRET`, `TWITTER_ACCESS_TOKEN`, `TWITTER_ACCESS_TOKEN_SECRET`.
-- Optional: `POST_INTERVAL` (seconds, default 3600).
-- Optional: `HISTORY_DAYS`, `TOPIC_DAYS`, `RN_MINSIZE`.
+- Keep selection and publishing in `bot.py`; hosted history in `scripts/github_state.py`.
+- Use the existing helpers and verify provider API contracts before changing payloads.
+- No database, local sleep loop, browser automation, or agent runtime dependency.
+- Keep dependencies limited to `requests` and `python-dotenv` unless justified.
+- Read configuration from environment or ignored `.env`; document it in README and `.env.example`.
+- Never log or commit credentials. Only Buffer secrets are required.
+- Dry runs must neither publish nor mutate history.
+- Reserve uncertain submissions in history; never blindly retry publishing mutations.
+- History without a language field belongs to the original Turkish edition.
+- Restore history before publishing; fail closed if hosted state cannot be read.
 
-Behavior
-- If tweet exceeds 280 chars, truncate title and append `...`.
-- Skip short or low-quality pages (no thumbnail, short extract, short page length).
-- Avoid repeating the same article for `HISTORY_DAYS`.
-- Reduce topic repetition for `TOPIC_DAYS` using token overlap.
-- If trending fetch fails, fall back to random; log and retry later.
-- For `--once`, exit 0 on success and 1 on failure.
+## Validation
 
-Non-goals
-- No DB, no queues.
-- No UI, no web server.
-
-Coding style
-- Keep logic in `bot.py` with small, readable functions.
-- Minimal dependencies (requests, tweepy, python-dotenv).
-- Log to console with timestamps.
-
-Tests
-- Unit tests only; mock external calls.
-- Avoid network in tests.
+Run `python -m unittest -q` after code changes. Mock external calls in unit tests.
+Use `--dry-run` for live selection checks; do not publish test posts without intent.
+Keep README concise and factual. Use English for code, commits, and documentation.

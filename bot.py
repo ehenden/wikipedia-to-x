@@ -1,37 +1,32 @@
 #!/usr/bin/env python3
 """
-X Random Wikipedia Bot
-A bot that posts random Turkish Wikipedia article links to X (Twitter).
+Publish Wikipedia articles to X through Buffer.
 """
 
 import os
 import sys
-import time
+import argparse
 import logging
-import tempfile
 import random
 import json
 import re
 import math
+import unicodedata
 from datetime import datetime, timedelta, timezone
 
 import requests
-import tweepy
 from dotenv import load_dotenv
 
 # Constants
-TWITTER_CHAR_LIMIT = 280
-TRUNCATION_OVERHEAD = 5  # Space for newlines and ellipsis
-DEFAULT_POST_INTERVAL = 3600  # 1 hour in seconds
+POST_CHAR_LIMIT = 280
+SOURCE_URL_WEIGHT = 23  # X wraps source links with t.co
 
-WIKIPEDIA_RANDOM_API = "https://tr.wikipedia.org/api/rest_v1/page/random/summary"
-WIKIPEDIA_QUERY_API = "https://tr.wikipedia.org/w/api.php"
 PAGEVIEWS_TOP_API = (
-    "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/tr.wikipedia"
+    "https://wikimedia.org/api/rest_v1/metrics/pageviews/top/{language}.wikipedia"
     "/all-access/{date}"
 )
 WIKIMEDIA_HEADERS = {
-    "User-Agent": "x-random-wikipedia-bot/1.0 (https://github.com/ehenden/X-Random-Wikipedia-Bot)"
+    "User-Agent": "wikipedia-to-x/1.0 (https://github.com/ehenden/wikipedia-to-x)"
 }
 
 STATE_DIR_NAME = ".bot_state"
@@ -46,16 +41,12 @@ RANDOM_SAMPLE_SIZE = 20
 QUERY_BATCH_SIZE = 20
 
 DEFAULT_RN_MINSIZE = 8000
-DEFAULT_X_POST_MAX_ATTEMPTS = 4
-DEFAULT_X_POST_RETRY_BASE_DELAY = 5
-DEFAULT_X_POST_RETRY_MAX_DELAY = 60
 
 MIN_EXTRACT_LEN = 100
 STRONG_EXTRACT_LEN = 200
 MIN_PAGE_LEN = 5000
 STRONG_PAGE_LEN = 10000
 
-RETRYABLE_X_STATUS_CODES = {429, 500, 502, 503, 504}
 
 # Configure logging
 logging.basicConfig(
@@ -96,55 +87,6 @@ def get_env_int(name, default, min_value=None, max_value=None):
     if max_value is not None and parsed > max_value:
         return max_value
     return parsed
-
-
-def get_env_bool(name, default=False):
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
-
-
-def get_twitter_error_details(error):
-    response = getattr(error, 'response', None)
-    status_code = getattr(response, 'status_code', None)
-    body = getattr(response, 'text', None)
-    headers = getattr(response, 'headers', None) or {}
-    request_id = headers.get('x-request-id')
-    api_errors = getattr(error, 'api_errors', None)
-    errors = getattr(error, 'errors', None)
-    return status_code, body, headers, request_id, api_errors, errors
-
-
-def is_retryable_twitter_error(error):
-    status_code, _body, _headers, _request_id, _api_errors, _errors = get_twitter_error_details(error)
-    return status_code in RETRYABLE_X_STATUS_CODES
-
-
-def get_x_retry_delay(attempt_index, headers=None):
-    headers = headers or {}
-    retry_after = headers.get('retry-after')
-    if retry_after is not None:
-        try:
-            retry_after_value = float(retry_after)
-            if retry_after_value > 0:
-                return retry_after_value
-        except (TypeError, ValueError):
-            logger.warning(f"Invalid Retry-After header '{retry_after}', using exponential backoff")
-
-    base_delay = get_env_int(
-        'X_POST_RETRY_BASE_DELAY',
-        DEFAULT_X_POST_RETRY_BASE_DELAY,
-        min_value=1,
-        max_value=300
-    )
-    max_delay = get_env_int(
-        'X_POST_RETRY_MAX_DELAY',
-        DEFAULT_X_POST_RETRY_MAX_DELAY,
-        min_value=base_delay,
-        max_value=900
-    )
-    return min(base_delay * (2 ** attempt_index), max_delay)
 
 
 def title_key(title):
@@ -245,6 +187,8 @@ def build_history_indexes(entries, topic_days):
     topic_cutoff = utcnow() - timedelta(days=topic_days)
 
     for entry in entries:
+        if entry.get('wiki_language', 'tr') != get_wiki_language():
+            continue
         recent_title_keys.add(entry.get('title_key') or title_key(entry.get('title')))
         pageid = entry.get('pageid')
         if pageid is not None:
@@ -263,6 +207,7 @@ def make_history_entry(article):
     title = article.get('title', '')
     extract = article.get('extract') or ''
     return {
+        'wiki_language': get_wiki_language(),
         'title': title,
         'title_key': title_key(title),
         'pageid': article.get('pageid'),
@@ -328,64 +273,45 @@ def chunked(items, size):
         yield items[index:index + size]
 
 
-def load_config(require_twitter_credentials=True):
-    """Load configuration from environment variables."""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    dotenv_path = os.path.join(base_dir, '.env')
-    load_dotenv(dotenv_path=dotenv_path)
+def get_wiki_language():
+    language = os.getenv('WIKI_LANGUAGE', 'tr').strip().lower()
+    if not re.fullmatch(r'[a-z]{2,12}(?:-[a-z0-9]{1,12})*', language):
+        raise ValueError('WIKI_LANGUAGE must be a Wikipedia language code, such as tr or en')
+    return language
 
-    # Parse post interval with error handling
-    post_interval_str = os.getenv('POST_INTERVAL', str(DEFAULT_POST_INTERVAL))
-    try:
-        post_interval = int(post_interval_str)
-        if post_interval <= 0:
-            raise ValueError("POST_INTERVAL must be positive")
-    except ValueError as e:
-        logger.error(f"Invalid POST_INTERVAL value '{post_interval_str}': {e}")
-        logger.info(f"Using default interval: {DEFAULT_POST_INTERVAL} seconds")
-        post_interval = DEFAULT_POST_INTERVAL
 
+def wikipedia_url(path):
+    return f'https://{get_wiki_language()}.wikipedia.org{path}'
+
+
+def load_config(require_credentials=True):
+    """Read Buffer credentials from the environment or an ignored .env file."""
+    load_dotenv(dotenv_path=os.path.join(get_base_dir(), '.env'))
     config = {
-        'publish_provider': os.getenv('PUBLISH_PROVIDER', 'twitter').strip().lower(),
         'buffer_api_key': os.getenv('BUFFER_API_KEY'),
         'buffer_channel_id': os.getenv('BUFFER_CHANNEL_ID'),
-        'api_key': os.getenv('TWITTER_API_KEY'),
-        'api_secret': os.getenv('TWITTER_API_SECRET'),
-        'access_token': os.getenv('TWITTER_ACCESS_TOKEN'),
-        'access_token_secret': os.getenv('TWITTER_ACCESS_TOKEN_SECRET'),
-        'post_interval': post_interval
     }
-
-    if config['publish_provider'] not in {'twitter', 'buffer'}:
-        logger.error('PUBLISH_PROVIDER must be twitter or buffer')
-        sys.exit(1)
-
-    if require_twitter_credentials and config['publish_provider'] == 'buffer':
-        if not config['buffer_api_key'] or not config['buffer_channel_id']:
-            logger.error('BUFFER_API_KEY and BUFFER_CHANNEL_ID are required')
-            sys.exit(1)
-    elif require_twitter_credentials:
-        # Validate required credentials
-        required_keys = ['api_key', 'api_secret', 'access_token', 'access_token_secret']
-        missing_keys = [key for key in required_keys if not config[key]]
-
-        if missing_keys:
-            logger.error(f"Missing required environment variables: {', '.join(missing_keys)}")
-            logger.error("Please check your .env file or environment variables.")
-            sys.exit(1)
-
+    config['wiki_language'] = get_wiki_language()
+    config['article_source'] = os.getenv('ARTICLE_SOURCE', 'popular').strip().lower()
+    config['wiki_category'] = os.getenv('WIKI_CATEGORY', '').strip()
+    if config['article_source'] not in {'popular', 'random', 'category'}:
+        raise ValueError('ARTICLE_SOURCE must be popular, random, or category')
+    if config['article_source'] == 'category' and not config['wiki_category'].startswith('Category:'):
+        raise ValueError('Category mode requires WIKI_CATEGORY with a Category: prefix')
+    if require_credentials and not (config['buffer_api_key'] and config['buffer_channel_id']):
+        sys.exit('BUFFER_API_KEY and BUFFER_CHANNEL_ID are required')
     return config
 
 
-def get_random_turkish_wikipedia_article():
+def get_random_article():
     """
-    Fetch a random Turkish Wikipedia article using the Wikipedia REST API.
+    Fetch a random Wikipedia article using the Wikipedia REST API.
 
     Returns:
         dict: Article information containing title and URL, or None if error occurs.
     """
     try:
-        response = requests.get(WIKIPEDIA_RANDOM_API, timeout=10, headers=WIKIMEDIA_HEADERS)
+        response = requests.get(wikipedia_url('/api/rest_v1/page/random/summary'), timeout=10, headers=WIKIMEDIA_HEADERS)
         response.raise_for_status()
         data = response.json()
 
@@ -409,9 +335,9 @@ def get_random_turkish_wikipedia_article():
 
 
 def get_trending_page_titles(pool_size=TREND_POOL_SIZE, days_back=1):
-    """Fetch top-viewed Turkish Wikipedia titles for a given day (UTC)."""
+    """Fetch top-viewed Wikipedia titles for a given day (UTC)."""
     date = (utcnow() - timedelta(days=days_back)).strftime("%Y/%m/%d")
-    url = PAGEVIEWS_TOP_API.format(date=date)
+    url = PAGEVIEWS_TOP_API.format(language=get_wiki_language(), date=date)
 
     try:
         response = requests.get(url, timeout=10, headers=WIKIMEDIA_HEADERS)
@@ -480,7 +406,7 @@ def get_page_details(candidates):
 
         try:
             response = requests.get(
-                WIKIPEDIA_QUERY_API,
+                wikipedia_url('/w/api.php'),
                 params=params,
                 timeout=10,
                 headers=WIKIMEDIA_HEADERS
@@ -538,7 +464,7 @@ def get_page_details_by_pageids(pageids):
 
         try:
             response = requests.get(
-                WIKIPEDIA_QUERY_API,
+                wikipedia_url('/w/api.php'),
                 params=params,
                 timeout=10,
                 headers=WIKIMEDIA_HEADERS
@@ -573,7 +499,7 @@ def get_page_details_by_pageids(pageids):
 
 
 def get_random_candidates(limit, rnminsize):
-    """Fetch random Turkish Wikipedia pages (namespace 0, non-redirects)."""
+    """Fetch random Wikipedia pages (namespace 0, non-redirects)."""
     params = {
         'action': 'query',
         'format': 'json',
@@ -586,7 +512,7 @@ def get_random_candidates(limit, rnminsize):
 
     try:
         response = requests.get(
-            WIKIPEDIA_QUERY_API,
+            wikipedia_url('/w/api.php'),
             params=params,
             timeout=10,
             headers=WIKIMEDIA_HEADERS
@@ -631,6 +557,39 @@ def get_filtered_random_article(recent_title_keys, recent_pageids, recent_tokens
             return chosen
 
     return None
+
+
+def get_category_article(category, recent_title_keys, recent_pageids, recent_tokens):
+    """Sample direct category members; bound requests and never leave the category."""
+    params = {
+        'action': 'query', 'format': 'json', 'list': 'categorymembers',
+        'cmtitle': category, 'cmnamespace': 0, 'cmtype': 'page',
+        'cmprop': 'ids|title', 'cmlimit': 500,
+    }
+    members = []
+    try:
+        for _ in range(3):
+            response = requests.get(wikipedia_url('/w/api.php'), params=dict(params),
+                                    timeout=10, headers=WIKIMEDIA_HEADERS)
+            response.raise_for_status()
+            data = response.json()
+            if data.get('error'):
+                logger.error('Wikipedia rejected the category query')
+                return None
+            members.extend(data.get('query', {}).get('categorymembers', []))
+            continuation = data.get('continue', {})
+            if len(members) >= 500 or not continuation.get('cmcontinue'):
+                break
+            params.update(continuation)
+    except (requests.exceptions.RequestException, ValueError):
+        logger.error('Category query failed')
+        return None
+    members = members[:500]
+    sample = random.sample(members, k=min(60, len(members)))
+    details = get_page_details_by_pageids([member['pageid'] for member in sample])
+    eligible = [article for article in details
+                if is_article_eligible(article, recent_title_keys, recent_pageids)]
+    return pick_from_scored(eligible, recent_tokens)
 
 
 def score_article(article):
@@ -690,168 +649,42 @@ def get_trending_article(recent_title_keys, recent_pageids, recent_tokens):
     return chosen
 
 
-def truncate_text(text, max_len):
-    if max_len <= 0:
+def text_weight(text):
+    # Conservative Unicode budget: ASCII weighs one, other code points at most two.
+    # This may shorten Latin/emoji text more than necessary, without another dependency.
+    return sum(1 if ord(char) < 128 else 2 for char in text)
+
+
+def truncate_text(text, max_weight):
+    if max_weight <= 0:
         return ''
-    if len(text) <= max_len:
+    if text_weight(text) <= max_weight:
         return text
-    if max_len <= 3:
-        return text[:max_len]
-    return text[:max_len - 3] + '...'
+    suffix = '...' if max_weight >= 3 else ''
+    budget = max_weight - len(suffix)
+    result = []
+    for char in text:
+        weight = text_weight(char)
+        if weight > budget:
+            break
+        result.append(char)
+        budget -= weight
+    return ''.join(result) + suffix
 
 
-def format_tweet(article):
-    """
-    Format a tweet with the article information.
-
-    Args:
-        article (dict): Article information containing title, URL, and extract.
-
-    Returns:
-        str: Formatted tweet text.
-    """
-    title = article.get('title', '').strip()
+def format_post(article):
+    """Preserve the source URL and fit a conservative X Unicode character budget."""
+    title = unicodedata.normalize('NFC', article.get('title', '').strip())
     url = article.get('url', '').strip()
-    extract = (article.get('extract', '') or '').strip()
-
-    if not extract:
-        tweet = f"{title}\n\n{url}"
-        if len(tweet) > TWITTER_CHAR_LIMIT:
-            max_title_length = TWITTER_CHAR_LIMIT - len(url) - TRUNCATION_OVERHEAD
-            title = truncate_text(title, max_title_length)
-            tweet = f"{title}\n\n{url}"
-        return tweet
-
-    tweet = f"{title}\n\n{extract}\n\n{url}"
-    if len(tweet) <= TWITTER_CHAR_LIMIT:
-        return tweet
-
-    available = TWITTER_CHAR_LIMIT - len(title) - len(url) - 4
-    if available <= 0:
-        max_title_length = TWITTER_CHAR_LIMIT - len(url) - TRUNCATION_OVERHEAD
-        title = truncate_text(title, max_title_length)
-        return f"{title}\n\n{url}"
-
+    extract = unicodedata.normalize('NFC', (article.get('extract') or '').strip())
+    title = truncate_text(title, POST_CHAR_LIMIT - SOURCE_URL_WEIGHT - 2)
+    available = POST_CHAR_LIMIT - text_weight(title) - SOURCE_URL_WEIGHT - 4
     extract = truncate_text(extract, available)
-    return f"{title}\n\n{extract}\n\n{url}"
+    body = f'{title}\n\n{extract}' if extract else title
+    return f'{body}\n\n{url}'
 
 
-def create_twitter_clients(config):
-    """
-    Create and authenticate Twitter API clients.
-
-    Returns:
-        tuple: (tweepy.Client, tweepy.API)
-    """
-    try:
-        client = tweepy.Client(
-            consumer_key=config['api_key'],
-            consumer_secret=config['api_secret'],
-            access_token=config['access_token'],
-            access_token_secret=config['access_token_secret']
-        )
-        auth = tweepy.OAuth1UserHandler(
-            config['api_key'],
-            config['api_secret'],
-            config['access_token'],
-            config['access_token_secret']
-        )
-        api_v1 = tweepy.API(auth)
-        logger.info("Successfully authenticated with X API")
-        return client, api_v1
-    except Exception as e:
-        logger.error(f"Error creating Twitter client: {e}")
-        sys.exit(1)
-
-
-def upload_media(api_v1, image_url):
-    """Download an image and upload to X, returning media_id."""
-    if not image_url:
-        return None
-
-    temp_path = None
-    try:
-        response = requests.get(image_url, stream=True, timeout=10, headers=WIKIMEDIA_HEADERS)
-        response.raise_for_status()
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.jpg') as tmp_file:
-            for chunk in response.iter_content(chunk_size=8192):
-                if chunk:
-                    tmp_file.write(chunk)
-            temp_path = tmp_file.name
-
-        media = api_v1.media_upload(temp_path)
-        return media.media_id_string
-    except requests.exceptions.RequestException as e:
-        logger.warning(f"Failed to download thumbnail: {e}")
-        return None
-    except tweepy.TweepyException as e:
-        logger.warning(f"Failed to upload media: {e}")
-        return None
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except OSError:
-                logger.warning("Failed to remove temp image file")
-
-
-def post_tweet(client, tweet_text, media_id=None):
-    """
-    Post a tweet to X (Twitter).
-
-    Args:
-        client (tweepy.Client): Authenticated Twitter API client.
-        tweet_text (str): The text to tweet.
-        media_id (str): Optional media id to attach.
-
-    Returns:
-        bool: True if successful, False otherwise.
-    """
-    max_attempts = get_env_int(
-        'X_POST_MAX_ATTEMPTS',
-        DEFAULT_X_POST_MAX_ATTEMPTS,
-        min_value=1,
-        max_value=10
-    )
-
-    for attempt in range(1, max_attempts + 1):
-        try:
-            if media_id:
-                client.create_tweet(text=tweet_text, media_ids=[media_id])
-            else:
-                client.create_tweet(text=tweet_text)
-            logger.info(f"Successfully posted tweet: {tweet_text[:50]}...")
-            return True
-        except tweepy.TweepyException as e:
-            status_code, body, headers, request_id, api_errors, errors = get_twitter_error_details(e)
-            retryable = is_retryable_twitter_error(e)
-            logger.error(
-                "Error posting tweet: %s | status=%s request_id=%s body=%s api_errors=%s errors=%s "
-                "| retryable=%s attempt=%s/%s",
-                e,
-                status_code,
-                request_id,
-                body,
-                api_errors,
-                errors,
-                retryable,
-                attempt,
-                max_attempts
-            )
-
-            if not retryable or attempt >= max_attempts:
-                return False
-
-            delay = get_x_retry_delay(attempt - 1, headers=headers)
-            logger.warning(
-                "Transient X API error while posting tweet. Retrying in %s seconds...",
-                delay
-            )
-            time.sleep(delay)
-
-
-def post_to_buffer(config, tweet_text, image_url=None):
+def post_to_buffer(config, post_text, image_url=None):
     """Submit once to Buffer; acceptance is not proof of X publication."""
     query = '''mutation Publish($input: CreatePostInput!) {
       createPost(input: $input) {
@@ -862,7 +695,7 @@ def post_to_buffer(config, tweet_text, image_url=None):
     }'''
     post_input = {
         'channelId': config['buffer_channel_id'],
-        'text': tweet_text,
+        'text': post_text,
         'schedulingType': 'automatic',
         'mode': 'shareNow',
         'assets': [{'image': {'url': image_url}}] if image_url else [],
@@ -893,17 +726,8 @@ def post_to_buffer(config, tweet_text, image_url=None):
         return False
 
 
-def run_bot_once(client, api_v1, dry_run=False, config=None):
-    """
-    Run the bot once: fetch an article and post it.
-
-    Args:
-        client (tweepy.Client): Authenticated Twitter API client.
-        api_v1 (tweepy.API): Authenticated Twitter API v1 client.
-
-    Returns:
-        bool: True if successful, False otherwise.
-    """
+def run_bot_once(config, dry_run=False):
+    """Select one article, submit it to Buffer, and record the outcome."""
     history_days = get_env_int('HISTORY_DAYS', DEFAULT_HISTORY_DAYS, min_value=1, max_value=3650)
     topic_days = get_env_int('TOPIC_DAYS', DEFAULT_TOPIC_DAYS, min_value=0, max_value=3650)
     history_path = get_history_path()
@@ -911,129 +735,59 @@ def run_bot_once(client, api_v1, dry_run=False, config=None):
     history = prune_history(load_history(history_path), history_days)
     recent_title_keys, recent_pageids, recent_tokens = build_history_indexes(history, topic_days)
 
-    article = get_trending_article(recent_title_keys, recent_pageids, recent_tokens)
-    if not article:
-        logger.warning("No suitable trending article found. Trying random.")
-        article = get_filtered_random_article(recent_title_keys, recent_pageids, recent_tokens)
-
-    if not article:
-        logger.warning("Falling back to random summary endpoint.")
-        fallback = get_random_turkish_wikipedia_article()
-        if fallback:
-            title = fallback.get('title', '')
-            extract = (fallback.get('extract') or '').strip()
-            if (
-                fallback.get('url')
-                and fallback.get('thumbnail_url')
-                and len(extract) >= MIN_EXTRACT_LEN
-                and not is_unwanted_title(title)
-                and title_key(title) not in recent_title_keys
-            ):
-                article = fallback
+    source = config.get('article_source', 'popular')
+    article = None
+    if source == 'category':
+        article = get_category_article(config['wiki_category'], recent_title_keys,
+                                       recent_pageids, recent_tokens)
+    else:
+        if source == 'popular':
+            article = get_trending_article(recent_title_keys, recent_pageids, recent_tokens)
+        if not article:
+            article = get_filtered_random_article(recent_title_keys, recent_pageids, recent_tokens)
+        if not article:
+            fallback = get_random_article()
+            if fallback:
+                title = fallback.get('title', '')
+                extract = (fallback.get('extract') or '').strip()
+                if (fallback.get('url') and fallback.get('thumbnail_url')
+                        and len(extract) >= MIN_EXTRACT_LEN
+                        and not is_unwanted_title(title) and ':' not in title
+                        and title_key(title) not in recent_title_keys
+                        and fallback.get('pageid') not in recent_pageids):
+                    article = fallback
 
     if not article or not article.get('url'):
         logger.error("Failed to find a suitable article to post.")
         return False
 
-    tweet_text = format_tweet(article)
+    post_text = format_post(article)
 
     if dry_run:
-        logger.info("Dry-run enabled. Tweet not posted.")
-        logger.info(f"Tweet preview:\n{tweet_text}")
+        logger.info("Dry-run enabled. Post not submitted.")
+        logger.info(f"Post preview:\n{post_text}")
         if article.get('thumbnail_url'):
             logger.info(f"Thumbnail: {article['thumbnail_url']}")
 
-        if get_env_bool('DRY_RUN_SAVE_HISTORY', default=True):
-            history.append(make_history_entry(article))
-            history = prune_history(history, history_days)
-            save_history(history_path, history)
-            logger.info(f"Saved to history: {article.get('title')}")
-
         return True
 
-    if config and config.get('publish_provider') == 'buffer':
-        post_id = post_to_buffer(config, tweet_text, article.get('thumbnail_url'))
-        entry = make_history_entry(article)
-        entry['buffer_post_id'] = post_id or None
-        entry['buffer_submission'] = 'accepted' if post_id else 'failed_or_unknown'
-        history.append(entry)
-        save_history(history_path, prune_history(history, history_days))
-        return bool(post_id)
-
-    if client is None or api_v1 is None:
-        logger.error("Twitter client is not configured.")
-        return False
-
-    media_id = None
-    if article.get('thumbnail_url'):
-        media_id = upload_media(api_v1, article['thumbnail_url'])
-
-    success = post_tweet(client, tweet_text, media_id)
-    if success:
-        history.append(make_history_entry(article))
-        history = prune_history(history, history_days)
-        save_history(history_path, history)
-    return success
-
-
-def run_bot_loop(config, dry_run=False):
-    """
-    Run the bot in a continuous loop, posting at scheduled intervals.
-
-    Args:
-        config (dict): Configuration containing API credentials and settings.
-    """
-    client = None
-    api_v1 = None
-    if not dry_run and config['publish_provider'] == 'twitter':
-        client, api_v1 = create_twitter_clients(config)
-
-    logger.info(f"Bot started. Will post every {config['post_interval']} seconds.")
-    logger.info("Press Ctrl+C to stop.")
-
-    try:
-        while True:
-            success = run_bot_once(client, api_v1, dry_run=dry_run, config=config)
-
-            if success:
-                logger.info(f"Waiting {config['post_interval']} seconds until next post...")
-            else:
-                if config['publish_provider'] == 'buffer':
-                    logger.error('Stopping after failed Buffer submission to avoid duplicates')
-                    sys.exit(1)
-                logger.warning("Failed to post. Retrying in 60 seconds...")
-                time.sleep(60)
-                continue
-
-            time.sleep(config['post_interval'])
-
-    except KeyboardInterrupt:
-        logger.info("\nBot stopped by user.")
-        sys.exit(0)
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        sys.exit(1)
+    post_id = post_to_buffer(config, post_text, article.get('thumbnail_url'))
+    entry = make_history_entry(article)
+    entry['buffer_post_id'] = post_id or None
+    entry['buffer_submission'] = 'accepted' if post_id else 'failed_or_unknown'
+    history.append(entry)
+    save_history(history_path, prune_history(history, history_days))
+    return bool(post_id)
 
 
 def main():
-    """Main entry point for the bot."""
-    logger.info("Starting X Random Wikipedia Bot...")
-
-    dry_run = '--dry-run' in sys.argv
-    once = '--once' in sys.argv
-
-    config = load_config(require_twitter_credentials=not dry_run)
-
-    if once:
-        client = None
-        api_v1 = None
-        if not dry_run and config['publish_provider'] == 'twitter':
-            client, api_v1 = create_twitter_clients(config)
-        success = run_bot_once(client, api_v1, dry_run=dry_run, config=config)
-        sys.exit(0 if success else 1)
-    else:
-        run_bot_loop(config, dry_run=dry_run)
+    """Run one cycle; the hosted scheduler supplies the recurring loop."""
+    parser = argparse.ArgumentParser(description='Publish a Wikipedia article through Buffer.')
+    parser.add_argument('--dry-run', action='store_true', help='Preview without publishing or changing history')
+    args = parser.parse_args()
+    config = load_config(require_credentials=not args.dry_run)
+    sys.exit(0 if run_bot_once(config, dry_run=args.dry_run) else 1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

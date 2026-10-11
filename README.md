@@ -1,206 +1,85 @@
-# X-Random-Wikipedia-Bot
+# Wikipedia to X
 
-A Python bot that posts Turkish Wikipedia articles to X (Twitter) at scheduled intervals.
+[![Tests](https://github.com/ehenden/wikipedia-to-x/actions/workflows/tests.yml/badge.svg)](https://github.com/ehenden/wikipedia-to-x/actions/workflows/tests.yml)
+[![Publish](https://github.com/ehenden/wikipedia-to-x/actions/workflows/post-once.yml/badge.svg)](https://github.com/ehenden/wikipedia-to-x/actions/workflows/post-once.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-## Features
+A small Python bot that selects a Wikipedia article and publishes its title,
+short summary, source link, and image to X through Buffer.
 
-- Prefers trending topics, with random fallback
-- Filters out low-quality pages (short extract, short page, no thumbnail)
-- Avoids repeats with a lightweight local history file
-- Posts title + short extract + URL, with thumbnail as media
-- Configurable posting intervals
-- Dry-run mode for safe local testing
+**Live account:** [@RastgeleWiki](https://x.com/RastgeleWiki)
 
-## Requirements
-
-- Python 3.7 or higher
-- X (Twitter) Developer Account with API credentials
-- Internet connection
-
-## Free hosted publishing with Buffer
-
-The GitHub workflow publishes through Buffer rather than calling the X API directly.
-Connect the intended X account to Buffer Free, verify your email, and create a personal
-API key. Add `BUFFER_API_KEY` and `BUFFER_CHANNEL_ID` to GitHub Actions repository secrets.
-Never put the API key in source code or workflow files.
-
-The workflow runs every three hours at minute 17 UTC (03:17, 06:17, 09:17, 12:17,
-15:17, 18:17, 21:17, and 00:17 in Istanbul). GitHub scheduled runs can be delayed.
-It uses `shareNow`, so Buffer's queue posting slots are not used.
-
-Article history is stored on the `bot-state` branch using the workflow's temporary
-GitHub token. Actual history updates create repository activity, reducing the risk
-of the public-repository schedule being disabled after 60 days without activity.
-History synchronization fails closed on API errors. Runs are serialized.
-
-Buffer accepting a post does not prove it was published on X. Inspect Buffer and X
-for publication failures or account reconnection requests. A failed or uncertain
-submission is recorded in history and is not automatically resubmitted, avoiding
-duplicate posts after timeouts. History contains only public article metadata and
-Buffer post IDs; it contains no credentials.
-
-For local Buffer use, set `PUBLISH_PROVIDER=buffer`, `BUFFER_API_KEY`, and
-`BUFFER_CHANNEL_ID` in your ignored `.env`. Direct X publishing remains available
-with `PUBLISH_PROVIDER=twitter` and the existing Twitter credentials.
-
-References: [Buffer API](https://developers.buffer.com/guides/posts-and-scheduling.html),
-[Buffer Free limits](https://support.buffer.com/en-us/articles/what-is-buffers-api-GtIYIQilz5).
-
-## Installation
-
-1. Clone the repository:
-```bash
-git clone https://github.com/ehenden/X-Random-Wikipedia-Bot.git
-cd X-Random-Wikipedia-Bot
+```text
+GitHub Actions schedule → Wikipedia → Buffer → X
+                         ↕
+                 JSON history on bot-state
 ```
 
-2. Install required dependencies:
+Each run processes one article and exits. GitHub Actions runs every three hours;
+no personal computer, agent, web server, or database needs to stay running.
+
+## Selection
+
+- **popular** — samples recent Wikipedia pageview rankings, with random fallback.
+- **random** — samples articles from the selected language edition.
+- **category** — samples direct members of a chosen category, for a focused topic
+  such as history. It does not traverse subcategories or fall back to unrelated topics.
+
+Selection filters out repeated articles, disambiguation pages, and pages without
+usable summaries or images. Topic overlap is a simple heuristic. History is kept
+per language for 60 days; failed or uncertain Buffer submissions are also reserved
+to reduce duplicate posting. Popularity reflects Wikipedia views, not live news
+or X trends. Summaries come from Wikipedia; no AI generation or translation is used.
+
+## Run your own
+
+1. Fork this repository and enable GitHub Actions.
+2. Connect your X account to Buffer and create a Buffer API key.
+3. Add Actions secrets `BUFFER_API_KEY` and `BUFFER_CHANNEL_ID`.
+4. Run **Publish Wikipedia** with `dry_run` checked to preview, then let the schedule run.
+
+Configure these under **Settings → Secrets and variables → Actions → Variables**:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `WIKI_LANGUAGE` | `tr` | Wikipedia edition, e.g. `en`, `de`, `ja` |
+| `ARTICLE_SOURCE` | `popular` | `popular`, `random`, or `category` |
+| `WIKI_CATEGORY` | empty | Required in category mode; full title with `Category:` prefix |
+| `HISTORY_DAYS` | `60` | Article repeat avoidance window |
+| `TOPIC_DAYS` | `14` | Topic overlap window; `0` disables it |
+| `RN_MINSIZE` | `8000` | Minimum size for random candidate queries |
+
+For English physics articles, set `WIKI_LANGUAGE=en`, `ARTICLE_SOURCE=category`,
+and `WIKI_CATEGORY=Category:Physics`. Choose an existing category in your edition
+for history or another topic. Change the cron in
+[post-once.yml](.github/workflows/post-once.yml) to adjust frequency.
+
+## Local development
+
+Python 3.11 or newer; two dependencies: `requests` and `python-dotenv`.
+
 ```bash
-python -m pip install -r requirements.txt
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+python bot.py --dry-run
+python -m unittest -q
 ```
 
-3. Set up your environment variables:
-   - Copy `.env.example` to `.env`:
-     ```bash
-     cp .env.example .env
-     ```
-   - Edit `.env` and add your X API credentials:
-     ```
-     TWITTER_API_KEY=your_api_key_here
-     TWITTER_API_SECRET=your_api_secret_here
-     TWITTER_ACCESS_TOKEN=your_access_token_here
-     TWITTER_ACCESS_TOKEN_SECRET=your_access_token_secret_here
-     POST_INTERVAL=3600
-     HISTORY_DAYS=60
-     TOPIC_DAYS=14
-     RN_MINSIZE=8000
-     ```
+Dry runs need no Buffer credentials and do not change history. `python bot.py`
+publishes one article using credentials from `.env` or the environment.
 
-## Getting X API Credentials
+## Operations
 
-1. Go to [Twitter Developer Portal](https://developer.twitter.com/)
-2. Create a new app or use an existing one
-3. Navigate to "Keys and Tokens" section
-4. Generate/copy the following:
-   - API Key (Consumer Key)
-   - API Secret Key (Consumer Secret)
-   - Access Token
-   - Access Token Secret
-5. Ensure your app has "Read and Write" permissions
+Actions restores and saves `.bot_state/history.json` on the `bot-state` branch.
+An accepted Buffer submission is not proof of delivery; check Buffer/X if needed.
+Publishing requests are not retried automatically after an uncertain response.
 
-## Usage
+The hosted setup can run within free service allowances, subject to current
+Buffer, X, and GitHub policies. Schedules may be delayed; inactive repositories
+can have schedules disabled. Successful history commits keep the repository active,
+but extended failures or exhausted content require attention in Actions.
 
-### Run continuously (posts at scheduled intervals)
-```bash
-python bot.py
-```
-
-The bot will:
-- Post a Turkish Wikipedia article
-- Wait for the specified interval (default: 1 hour)
-- Repeat indefinitely
-
-Press `Ctrl+C` to stop the bot.
-
-### Run once (post a single article and exit)
-```bash
-python bot.py --once
-```
-
-This is useful for:
-- Testing your configuration
-- Running via cron jobs
-- One-time posts
-
-### Dry-run (no tweet is posted)
-```bash
-python bot.py --once --dry-run
-```
-
-## Configuration
-
-Edit the `.env` file to configure the bot:
-
-- `TWITTER_API_KEY`: Your X API key
-- `TWITTER_API_SECRET`: Your X API secret
-- `TWITTER_ACCESS_TOKEN`: Your access token
-- `TWITTER_ACCESS_TOKEN_SECRET`: Your access token secret
-- `POST_INTERVAL`: Time between posts in seconds (default: 3600 = 1 hour)
-- `HISTORY_DAYS`: Do not repeat the same article for N days (default: 60)
-- `TOPIC_DAYS`: Reduce topic repetition for N days (default: 14)
-- `RN_MINSIZE`: Random page minimum size in bytes (default: 8000)
-
-## How It Works
-
-1. Pulls a pool of trending articles from Wikimedia pageviews
-2. Samples candidates, fetches details (extract, thumbnail, length, URL)
-3. Filters by quality and recent history
-4. Scores and selects a candidate with randomness
-5. Posts title + short extract + URL with thumbnail as media
-6. Falls back to random candidates if needed
-
-## Scheduling with Cron
-
-To run the bot at specific times using cron:
-
-1. Make the script executable:
-```bash
-chmod +x bot.py
-```
-
-2. Add to crontab (edit with `crontab -e`):
-```bash
-# Post every hour
-0 * * * * cd /path/to/X-Random-Wikipedia-Bot && /usr/bin/python3 bot.py --once
-
-# Post every 6 hours
-0 */6 * * * cd /path/to/X-Random-Wikipedia-Bot && /usr/bin/python3 bot.py --once
-```
-
-## History Cache
-
-The bot stores a small local history file in `.bot_state/history.json` to avoid repeats.
-This folder is ignored by git in the code branch. GitHub Actions persists it separately
-on the `bot-state` branch between runs.
-
-## Logging
-
-The bot logs all activities including:
-- Successful posts
-- API errors
-- Article fetch operations
-- Timing information
-
-Logs are displayed in the console with timestamps.
-
-## Troubleshooting
-
-**Error: Missing required environment variables**
-- Ensure your `.env` file exists and contains all required credentials
-- Check that variable names match exactly
-
-**Error: Authentication failed**
-- Verify your API credentials are correct
-- Ensure your X app has "Read and Write" permissions
-- Check that tokens haven't expired
-
-**Error: Rate limit exceeded**
-- X has rate limits on API calls
-- Increase `POST_INTERVAL` to post less frequently
-- Wait for the rate limit window to reset
-
-## License
-
-MIT License - see [LICENSE](LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Disclaimer
-
-This bot is for educational purposes. Make sure to comply with:
-- X (Twitter) Terms of Service
-- X Developer Agreement and Policy
-- Wikipedia Terms of Use
-- Responsible bot behavior guidelines
+Code: [MIT](LICENSE). Wikipedia text and media retain their source licenses;
+follow the linked article and image pages for attribution and reuse terms.
