@@ -30,8 +30,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/github_state.py restore
+      - name: Load private summary overlay
+        env:
+          AI_SUMMARY_RUNNER: ${{ vars.AI_SUMMARY_RUNNER }}
+        run: python -c 'import os; from pathlib import Path; Path("ai_summary_runner.py").write_text(os.environ["AI_SUMMARY_RUNNER"])'
       - name: Post once
         env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
           WIKI_LANGUAGE: ${{ vars.WIKI_LANGUAGE || 'tr' }}
@@ -43,9 +48,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run }}
         run: |
           if [ "$DRY_RUN" = "true" ]; then
-            python bot.py --dry-run
+            python ai_summary_runner.py --dry-run
           else
-            python bot.py
+            python ai_summary_runner.py
           fi
       - name: Save durable article history
         if: always()
