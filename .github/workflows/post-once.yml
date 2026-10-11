@@ -2,7 +2,7 @@ name: Publish Wikipedia
 
 on:
   schedule:
-    - cron: '17 */3 * * *' # every 3 hours, away from peak load
+    - cron: '17,47 * * * *' # every 30 minutes, away from peak load
   workflow_dispatch:
     inputs:
       dry_run:
