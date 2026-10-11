@@ -17,6 +17,35 @@ A Python bot that posts Turkish Wikipedia articles to X (Twitter) at scheduled i
 - X (Twitter) Developer Account with API credentials
 - Internet connection
 
+## Free hosted publishing with Buffer
+
+The GitHub workflow publishes through Buffer rather than calling the X API directly.
+Connect the intended X account to Buffer Free, verify your email, and create a personal
+API key. Add `BUFFER_API_KEY` and `BUFFER_CHANNEL_ID` to GitHub Actions repository secrets.
+Never put the API key in source code or workflow files.
+
+The workflow runs every three hours at minute 17 UTC (03:17, 06:17, 09:17, 12:17,
+15:17, 18:17, 21:17, and 00:17 in Istanbul). GitHub scheduled runs can be delayed.
+It uses `shareNow`, so Buffer's queue posting slots are not used.
+
+Article history is stored on the `bot-state` branch using the workflow's temporary
+GitHub token. Actual history updates create repository activity, reducing the risk
+of the public-repository schedule being disabled after 60 days without activity.
+History synchronization fails closed on API errors. Runs are serialized.
+
+Buffer accepting a post does not prove it was published on X. Inspect Buffer and X
+for publication failures or account reconnection requests. A failed or uncertain
+submission is recorded in history and is not automatically resubmitted, avoiding
+duplicate posts after timeouts. History contains only public article metadata and
+Buffer post IDs; it contains no credentials.
+
+For local Buffer use, set `PUBLISH_PROVIDER=buffer`, `BUFFER_API_KEY`, and
+`BUFFER_CHANNEL_ID` in your ignored `.env`. Direct X publishing remains available
+with `PUBLISH_PROVIDER=twitter` and the existing Twitter credentials.
+
+References: [Buffer API](https://developers.buffer.com/guides/posts-and-scheduling.html),
+[Buffer Free limits](https://support.buffer.com/en-us/articles/what-is-buffers-api-GtIYIQilz5).
+
 ## Installation
 
 1. Clone the repository:
@@ -131,8 +160,8 @@ chmod +x bot.py
 ## History Cache
 
 The bot stores a small local history file in `.bot_state/history.json` to avoid repeats.
-This folder is ignored by git. In GitHub Actions, caching `.bot_state` preserves history
-between runs.
+This folder is ignored by git in the code branch. GitHub Actions persists it separately
+on the `bot-state` branch between runs.
 
 ## Logging
 

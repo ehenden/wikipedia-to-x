@@ -46,11 +46,16 @@ RANDOM_SAMPLE_SIZE = 20
 QUERY_BATCH_SIZE = 20
 
 DEFAULT_RN_MINSIZE = 8000
+DEFAULT_X_POST_MAX_ATTEMPTS = 4
+DEFAULT_X_POST_RETRY_BASE_DELAY = 5
+DEFAULT_X_POST_RETRY_MAX_DELAY = 60
 
 MIN_EXTRACT_LEN = 100
 STRONG_EXTRACT_LEN = 200
 MIN_PAGE_LEN = 5000
 STRONG_PAGE_LEN = 10000
+
+RETRYABLE_X_STATUS_CODES = {429, 500, 502, 503, 504}
 
 # Configure logging
 logging.basicConfig(
@@ -98,6 +103,48 @@ def get_env_bool(name, default=False):
     if value is None:
         return default
     return str(value).strip().lower() in {'1', 'true', 'yes', 'y', 'on'}
+
+
+def get_twitter_error_details(error):
+    response = getattr(error, 'response', None)
+    status_code = getattr(response, 'status_code', None)
+    body = getattr(response, 'text', None)
+    headers = getattr(response, 'headers', None) or {}
+    request_id = headers.get('x-request-id')
+    api_errors = getattr(error, 'api_errors', None)
+    errors = getattr(error, 'errors', None)
+    return status_code, body, headers, request_id, api_errors, errors
+
+
+def is_retryable_twitter_error(error):
+    status_code, _body, _headers, _request_id, _api_errors, _errors = get_twitter_error_details(error)
+    return status_code in RETRYABLE_X_STATUS_CODES
+
+
+def get_x_retry_delay(attempt_index, headers=None):
+    headers = headers or {}
+    retry_after = headers.get('retry-after')
+    if retry_after is not None:
+        try:
+            retry_after_value = float(retry_after)
+            if retry_after_value > 0:
+                return retry_after_value
+        except (TypeError, ValueError):
+            logger.warning(f"Invalid Retry-After header '{retry_after}', using exponential backoff")
+
+    base_delay = get_env_int(
+        'X_POST_RETRY_BASE_DELAY',
+        DEFAULT_X_POST_RETRY_BASE_DELAY,
+        min_value=1,
+        max_value=300
+    )
+    max_delay = get_env_int(
+        'X_POST_RETRY_MAX_DELAY',
+        DEFAULT_X_POST_RETRY_MAX_DELAY,
+        min_value=base_delay,
+        max_value=900
+    )
+    return min(base_delay * (2 ** attempt_index), max_delay)
 
 
 def title_key(title):
@@ -299,6 +346,9 @@ def load_config(require_twitter_credentials=True):
         post_interval = DEFAULT_POST_INTERVAL
 
     config = {
+        'publish_provider': os.getenv('PUBLISH_PROVIDER', 'twitter').strip().lower(),
+        'buffer_api_key': os.getenv('BUFFER_API_KEY'),
+        'buffer_channel_id': os.getenv('BUFFER_CHANNEL_ID'),
         'api_key': os.getenv('TWITTER_API_KEY'),
         'api_secret': os.getenv('TWITTER_API_SECRET'),
         'access_token': os.getenv('TWITTER_ACCESS_TOKEN'),
@@ -306,7 +356,15 @@ def load_config(require_twitter_credentials=True):
         'post_interval': post_interval
     }
 
-    if require_twitter_credentials:
+    if config['publish_provider'] not in {'twitter', 'buffer'}:
+        logger.error('PUBLISH_PROVIDER must be twitter or buffer')
+        sys.exit(1)
+
+    if require_twitter_credentials and config['publish_provider'] == 'buffer':
+        if not config['buffer_api_key'] or not config['buffer_channel_id']:
+            logger.error('BUFFER_API_KEY and BUFFER_CHANNEL_ID are required')
+            sys.exit(1)
+    elif require_twitter_credentials:
         # Validate required credentials
         required_keys = ['api_key', 'api_secret', 'access_token', 'access_token_secret']
         missing_keys = [key for key in required_keys if not config[key]]
@@ -750,34 +808,92 @@ def post_tweet(client, tweet_text, media_id=None):
     Returns:
         bool: True if successful, False otherwise.
     """
+    max_attempts = get_env_int(
+        'X_POST_MAX_ATTEMPTS',
+        DEFAULT_X_POST_MAX_ATTEMPTS,
+        min_value=1,
+        max_value=10
+    )
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if media_id:
+                client.create_tweet(text=tweet_text, media_ids=[media_id])
+            else:
+                client.create_tweet(text=tweet_text)
+            logger.info(f"Successfully posted tweet: {tweet_text[:50]}...")
+            return True
+        except tweepy.TweepyException as e:
+            status_code, body, headers, request_id, api_errors, errors = get_twitter_error_details(e)
+            retryable = is_retryable_twitter_error(e)
+            logger.error(
+                "Error posting tweet: %s | status=%s request_id=%s body=%s api_errors=%s errors=%s "
+                "| retryable=%s attempt=%s/%s",
+                e,
+                status_code,
+                request_id,
+                body,
+                api_errors,
+                errors,
+                retryable,
+                attempt,
+                max_attempts
+            )
+
+            if not retryable or attempt >= max_attempts:
+                return False
+
+            delay = get_x_retry_delay(attempt - 1, headers=headers)
+            logger.warning(
+                "Transient X API error while posting tweet. Retrying in %s seconds...",
+                delay
+            )
+            time.sleep(delay)
+
+
+def post_to_buffer(config, tweet_text, image_url=None):
+    """Submit once to Buffer; acceptance is not proof of X publication."""
+    query = '''mutation Publish($input: CreatePostInput!) {
+      createPost(input: $input) {
+        __typename
+        ... on PostActionSuccess { post { id } }
+        ... on MutationError { message }
+      }
+    }'''
+    post_input = {
+        'channelId': config['buffer_channel_id'],
+        'text': tweet_text,
+        'schedulingType': 'automatic',
+        'mode': 'shareNow',
+        'assets': [{'image': {'url': image_url}}] if image_url else [],
+        'needsApproval': False,
+    }
     try:
-        if media_id:
-            client.create_tweet(text=tweet_text, media_ids=[media_id])
-        else:
-            client.create_tweet(text=tweet_text)
-        logger.info(f"Successfully posted tweet: {tweet_text[:50]}...")
-        return True
-    except tweepy.TweepyException as e:
-        response = getattr(e, 'response', None)
-        status_code = getattr(response, 'status_code', None)
-        body = getattr(response, 'text', None)
-        headers = getattr(response, 'headers', None) or {}
-        request_id = headers.get('x-request-id')
-        api_errors = getattr(e, 'api_errors', None)
-        errors = getattr(e, 'errors', None)
-        logger.error(
-            "Error posting tweet: %s | status=%s request_id=%s body=%s api_errors=%s errors=%s",
-            e,
-            status_code,
-            request_id,
-            body,
-            api_errors,
-            errors
+        response = requests.post(
+            'https://api.buffer.com',
+            headers={'Authorization': 'Bearer ' + config['buffer_api_key']},
+            json={'query': query, 'variables': {'input': post_input}},
+            timeout=45,
         )
+        response.raise_for_status()
+        data = response.json()
+        if data.get('errors'):
+            logger.error('Buffer GraphQL request failed; no automatic resubmission')
+            return False
+        result = (data.get('data') or {}).get('createPost') or {}
+        post_id = (result.get('post') or {}).get('id')
+        if result.get('__typename') != 'PostActionSuccess' or not post_id:
+            logger.error('Buffer rejected the post (type=%s)', result.get('__typename'))
+            return False
+        logger.info('Buffer accepted post id=%s; verify publication in X', post_id)
+        return post_id
+    except (requests.exceptions.RequestException, ValueError):
+        # A timed-out mutation may have succeeded. Never retry it blindly.
+        logger.error('Buffer request failed or outcome is unknown; check Buffer before retrying')
         return False
 
 
-def run_bot_once(client, api_v1, dry_run=False):
+def run_bot_once(client, api_v1, dry_run=False, config=None):
     """
     Run the bot once: fetch an article and post it.
 
@@ -835,6 +951,15 @@ def run_bot_once(client, api_v1, dry_run=False):
 
         return True
 
+    if config and config.get('publish_provider') == 'buffer':
+        post_id = post_to_buffer(config, tweet_text, article.get('thumbnail_url'))
+        entry = make_history_entry(article)
+        entry['buffer_post_id'] = post_id or None
+        entry['buffer_submission'] = 'accepted' if post_id else 'failed_or_unknown'
+        history.append(entry)
+        save_history(history_path, prune_history(history, history_days))
+        return bool(post_id)
+
     if client is None or api_v1 is None:
         logger.error("Twitter client is not configured.")
         return False
@@ -860,7 +985,7 @@ def run_bot_loop(config, dry_run=False):
     """
     client = None
     api_v1 = None
-    if not dry_run:
+    if not dry_run and config['publish_provider'] == 'twitter':
         client, api_v1 = create_twitter_clients(config)
 
     logger.info(f"Bot started. Will post every {config['post_interval']} seconds.")
@@ -868,11 +993,14 @@ def run_bot_loop(config, dry_run=False):
 
     try:
         while True:
-            success = run_bot_once(client, api_v1, dry_run=dry_run)
+            success = run_bot_once(client, api_v1, dry_run=dry_run, config=config)
 
             if success:
                 logger.info(f"Waiting {config['post_interval']} seconds until next post...")
             else:
+                if config['publish_provider'] == 'buffer':
+                    logger.error('Stopping after failed Buffer submission to avoid duplicates')
+                    sys.exit(1)
                 logger.warning("Failed to post. Retrying in 60 seconds...")
                 time.sleep(60)
                 continue
@@ -899,9 +1027,9 @@ def main():
     if once:
         client = None
         api_v1 = None
-        if not dry_run:
+        if not dry_run and config['publish_provider'] == 'twitter':
             client, api_v1 = create_twitter_clients(config)
-        success = run_bot_once(client, api_v1, dry_run=dry_run)
+        success = run_bot_once(client, api_v1, dry_run=dry_run, config=config)
         sys.exit(0 if success else 1)
     else:
         run_bot_loop(config, dry_run=dry_run)

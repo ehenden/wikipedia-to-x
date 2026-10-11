@@ -2,44 +2,40 @@ name: Post Random Turkish Wikipedia
 
 on:
   schedule:
-    - cron: '0 */3 * * *' # every 3 hours
+    - cron: '17 */3 * * *' # every 3 hours, away from peak load
   workflow_dispatch:
 
 jobs:
   post:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: wikipedia-publisher
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Prepare bot state
-        run: mkdir -p .bot_state
-      - name: Restore bot state cache
-        uses: actions/cache@v4
-        with:
-          path: .bot_state
-          key: bot-state-${{ github.run_id }}
-          restore-keys: |
-            bot-state-
       - name: Install deps
         run: pip install -r requirements.txt
-      - name: Show commit and snippet
-        run: |
-          git rev-parse --short HEAD
-          python - <<'PY'
-          import inspect, bot
-          import re
-          src = inspect.getsource(bot.post_tweet)
-          print(re.sub(r"\s+", " ", src)[:300])
-          PY
+      - name: Restore durable article history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/github_state.py restore
       - name: Post once
         env:
-          TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
-          TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
-          TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
-          TWITTER_ACCESS_TOKEN_SECRET: ${{ secrets.TWITTER_ACCESS_TOKEN_SECRET }}
+          PUBLISH_PROVIDER: buffer
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
           HISTORY_DAYS: 60
           TOPIC_DAYS: 14
           RN_MINSIZE: 8000
         run: python bot.py --once
+      - name: Save durable article history
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/github_state.py save
