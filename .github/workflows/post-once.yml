@@ -31,6 +31,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/github_state.py restore
       - name: Load private summary overlay
+        if: ${{ vars.AI_SUMMARY_RUNNER != '' }}
         env:
           AI_SUMMARY_RUNNER: ${{ vars.AI_SUMMARY_RUNNER }}
         run: python -c 'import os; from pathlib import Path; Path("ai_summary_runner.py").write_text(os.environ["AI_SUMMARY_RUNNER"])'
@@ -46,11 +47,16 @@ jobs:
           TOPIC_DAYS: ${{ vars.TOPIC_DAYS || '14' }}
           RN_MINSIZE: ${{ vars.RN_MINSIZE || '8000' }}
           DRY_RUN: ${{ inputs.dry_run }}
+          AI_SUMMARY_ENABLED: ${{ vars.AI_SUMMARY_RUNNER != '' }}
         run: |
+          runner=bot.py
+          if [ "$AI_SUMMARY_ENABLED" = "true" ]; then
+            runner=ai_summary_runner.py
+          fi
           if [ "$DRY_RUN" = "true" ]; then
-            python ai_summary_runner.py --dry-run
+            python "$runner" --dry-run
           else
-            python ai_summary_runner.py
+            python "$runner"
           fi
       - name: Save durable article history
         if: always()
