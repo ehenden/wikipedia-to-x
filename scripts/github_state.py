@@ -18,14 +18,25 @@ def sync_history(mode):
     })
     root = 'https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY']
     url = root + '/contents/.bot_state/history.json'
-    response = session.get(url, params={'ref': 'bot-state'}, timeout=30)
+    response = session.get(url, params={'ref': 'bot-state'},
+                           headers={'Accept': 'application/vnd.github.object+json'}, timeout=30)
     if response.status_code == 404:
         remote = None
     else:
         response.raise_for_status()
         remote = response.json()
+    remote_content = b'[]\n'
+    if remote:
+        if remote.get('encoding') == 'none':
+            # At 48 posts/day, sixty days of history can exceed the 1 MB inline limit.
+            raw = session.get(url, params={'ref': 'bot-state'},
+                              headers={'Accept': 'application/vnd.github.raw+json'}, timeout=30)
+            raw.raise_for_status()
+            remote_content = raw.content
+        else:
+            remote_content = base64.b64decode(remote['content'])
     if mode == 'restore':
-        content = base64.b64decode(remote['content']) if remote else b'[]\n'
+        content = remote_content
         if not isinstance(json.loads(content), list):
             raise ValueError('History must be a list')
         path.parent.mkdir(exist_ok=True)
@@ -36,7 +47,7 @@ def sync_history(mode):
     content = path.read_bytes()
     if not isinstance(json.loads(content), list):
         raise ValueError('History must be a list')
-    if remote and base64.b64decode(remote['content']) == content:
+    if remote and remote_content == content:
         return
     if not remote:
         branch = session.get(root + '/git/ref/heads/bot-state', timeout=30)
