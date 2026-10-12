@@ -2,7 +2,7 @@ name: Publish Wikipedia
 
 on:
   schedule:
-    - cron: '17,47 * * * *' # every 30 minutes, away from peak load
+    - cron: '2/5 * * * *' # check every 5 minutes; history enforces the 30-minute interval
   workflow_dispatch:
     inputs:
       dry_run:
@@ -46,6 +46,8 @@ jobs:
           HISTORY_DAYS: ${{ vars.HISTORY_DAYS || '60' }}
           TOPIC_DAYS: ${{ vars.TOPIC_DAYS || '14' }}
           RN_MINSIZE: ${{ vars.RN_MINSIZE || '8000' }}
+          POST_INTERVAL: ${{ vars.POST_INTERVAL || '1800' }}
+          VERIFY_DELIVERY: 'true'
           DRY_RUN: ${{ inputs.dry_run }}
           AI_SUMMARY_ENABLED: ${{ vars.AI_SUMMARY_RUNNER != '' }}
         run: |
