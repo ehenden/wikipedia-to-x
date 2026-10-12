@@ -30,6 +30,30 @@
 - Duplicate-prevention run `38298411768` succeeded: it skipped before selection,
   AI or Buffer calls, and hosted history SHA stayed
   `a502fc679f6a9c8047319332dc46ccf0c76d249b`.
+- Hosted continuation: `26aaf98` adds an opt-in `next_cycle` job. The publication
+  job emits a delay computed from actual history; the waiting job dispatches one
+  successor with the repository's ephemeral `GITHUB_TOKEN` (`actions: write`).
+  A separate concurrency group bounds waiting jobs. Cron remains a backup.
+- `CONTINUOUS_PUBLISHING=true` is enabled. Root run `38300070763` was dispatched
+  with `keep_running=true`; its publication job passed and its next-cycle timer started.
+- Final local tests: 41 passed (34 repository, seven private-overlay). Automatic
+  successor publication is confirmed below. Hosted Tests run `38300824442`: 34 passed.
+- Reservation hardening: `8d6e797` plus workflow `91f3d56` persist pending state
+  to GitHub before Buffer submission. History failures block the mutation.
+- Large history support: `b882e26` uses GitHub's object/raw media types so the
+  60-day history can grow past the 1 MB inline-content limit at this publication rate.
+- To stop continuation, set `CONTINUOUS_PUBLISHING=false` and cancel the waiting
+  run. Disable the workflow to pause both cron and continuation. Waiting uses one
+  standard GitHub-hosted Ubuntu runner; this repository is public.
+- Automatic continuation proof: root `38300070763` completed successfully and
+  dispatched `38301617977` at 2026-10-12 20:02:31 UTC. The successor's actor and
+  triggering actor are both `github-actions[bot]`, and its publication job passed.
+- The successor published "Radin Inten II Uluslararası Havalimanı" at 20:02:49 UTC;
+  Buffer post `6acd3ce8f5c35b68cbfc9900` was read back as `sent`.
+  Destination: https://twitter.com/RastgeleWiki/status/2109736566323093876
+- Real publications were 30 minutes 26 seconds apart. The successor's waiting job
+  started with a 1794-second delay; the next target is around 20:32 UTC (23:32 Istanbul).
+  This is confirmed continuation behavior, not a guarantee against GitHub/Buffer/X outages.
 
 ## Previous audit
 
