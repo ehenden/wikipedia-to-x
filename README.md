@@ -15,7 +15,7 @@ GitHub Actions schedule → Wikipedia → Buffer → X
                  JSON history on bot-state
 ```
 
-Each run processes one article and exits. GitHub Actions runs every three hours;
+Each run processes one article and exits. GitHub Actions runs every 30 minutes;
 no personal computer, agent, web server, or database needs to stay running.
 
 ## Selection
@@ -29,7 +29,9 @@ Selection filters out repeated articles, disambiguation pages, and pages without
 usable summaries or images. Topic overlap is a simple heuristic. History is kept
 per language for 60 days; failed or uncertain Buffer submissions are also reserved
 to reduce duplicate posting. Popularity reflects Wikipedia views, not live news
-or X trends. Summaries come from Wikipedia; no AI generation or translation is used.
+or X trends. By default, summaries come directly from Wikipedia. The optional
+`AI_SUMMARY_RUNNER` Actions variable supplies a private summary entrypoint and uses
+the `OPENROUTER_API_KEY` secret; forks do not need either.
 
 ## Run your own
 

@@ -14,6 +14,32 @@ import bot
 class TestBotFunctions(unittest.TestCase):
     """Test bot functions without external API calls."""
 
+    def test_turkish_summary_uses_single_weight_characters(self):
+        summary = ('Rahibe Teresa Anıt Evi, Üsküp’te bulunan bir müzedir. '
+                   'Rahibe Teresa’nın yaşamını anlatan fotoğraf ve kişisel eşyalar sergilenir.')
+        self.assertEqual(bot.text_weight(summary), len(summary))
+        self.assertEqual(bot.truncate_text(summary, len(summary)), summary)
+
+    def test_text_weight_unicode_ranges_and_normalization(self):
+        cases = {'çğıöşüİé': 8, 'e\u0301': 1, '世界': 4, '😀': 2,
+                 '\u10ff': 1, '\u1100': 2, '\u2000': 1, '\u200d': 1,
+                 '\u200e': 2, '\u2010': 1, '\u201f': 1, '\u2020': 2,
+                 '\u2032': 1, '\u2037': 1, '\u2038': 2}
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(bot.text_weight(text), expected)
+        # Multi-codepoint emoji stay above X's actual weight, never below it.
+        self.assertGreaterEqual(bot.text_weight('👨‍👩‍👧‍👦'), 2)
+        self.assertEqual(bot.truncate_text('e\u0301' * 10, 6), 'ééé...')
+
+    def test_turkish_post_preserves_summary_that_fits_x_budget(self):
+        title = 'İklim değişkenliği ve değişiklikleri'
+        summary = 'çğıöşü' * 35 + '.'
+        url = 'https://tr.wikipedia.org/wiki/İklim_değişkenliği_ve_değişiklikleri'
+        post = bot.format_post({'title': title, 'extract': summary, 'url': url})
+        self.assertEqual(post, f'{title}\n\n{summary}\n\n{url}')
+        self.assertLessEqual(len(title) + len(summary) + 4 + 23, 280)
+
 
     @patch('bot.requests.post')
     def test_buffer_acceptance_with_image_and_url(self, post):

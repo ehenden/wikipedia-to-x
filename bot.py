@@ -650,12 +650,17 @@ def get_trending_article(recent_title_keys, recent_pageids, recent_tokens):
 
 
 def text_weight(text):
-    # Conservative Unicode budget: ASCII weighs one, other code points at most two.
-    # This may shorten Latin/emoji text more than necessary, without another dependency.
-    return sum(1 if ord(char) < 128 else 2 for char in text)
+    # twitter-text v3 single-weight ranges, including Turkish/Latin characters.
+    # Emoji sequences remain conservatively overcounted without another dependency.
+    # https://github.com/twitter/twitter-text/blob/master/config/v3.json
+    text = unicodedata.normalize('NFC', text)
+    return sum(1 if (ord(char) <= 0x10FF or 0x2000 <= ord(char) <= 0x200D
+                     or 0x2010 <= ord(char) <= 0x201F
+                     or 0x2032 <= ord(char) <= 0x2037) else 2 for char in text)
 
 
 def truncate_text(text, max_weight):
+    text = unicodedata.normalize('NFC', text)
     if max_weight <= 0:
         return ''
     if text_weight(text) <= max_weight:
