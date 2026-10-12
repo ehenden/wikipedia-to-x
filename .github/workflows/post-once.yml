@@ -9,11 +9,17 @@ on:
         description: Preview without publishing or changing history
         type: boolean
         default: false
+      keep_running:
+        description: Continue hosted publication cycles (requires CONTINUOUS_PUBLISHING=true)
+        type: boolean
+        default: false
 
 jobs:
   post:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      cycle_delay: ${{ steps.delay.outputs.seconds }}
     permissions:
       contents: write
     concurrency:
@@ -27,6 +33,7 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
       - name: Restore durable article history
+        id: restore
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/github_state.py restore
@@ -61,7 +68,42 @@ jobs:
             python "$runner"
           fi
       - name: Save durable article history
-        if: always()
+        if: ${{ always() && steps.restore.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: python scripts/github_state.py save
+      - name: Determine next publication time
+        id: delay
+        if: ${{ always() && steps.restore.outcome == 'success' }}
+        env:
+          POST_INTERVAL: ${{ vars.POST_INTERVAL || '1800' }}
+        run: |
+          python - <<'PY'
+          import os, bot
+          interval = bot.get_env_int('POST_INTERVAL', 1800, min_value=60, max_value=86400)
+          delay = bot.next_cycle_delay(bot.load_history(bot.get_history_path()), interval)
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'seconds={min(1800, delay)}\n')
+          print(f'Next hosted check in {min(1800, delay)} seconds')
+          PY
+
+  next_cycle:
+    needs: post
+    if: ${{ always() && inputs.keep_running && !inputs.dry_run && vars.CONTINUOUS_PUBLISHING == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      actions: write
+      contents: read
+    concurrency:
+      group: wikipedia-next-cycle
+      cancel-in-progress: false
+    steps:
+      - name: Wait until the next cycle is due
+        env:
+          CYCLE_DELAY: ${{ needs.post.outputs.cycle_delay || '1800' }}
+        run: sleep "$CYCLE_DELAY"
+      - name: Dispatch the next publication cycle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run post-once.yml --repo "$GITHUB_REPOSITORY" --ref main -f dry_run=false -f keep_running=true
