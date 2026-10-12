@@ -759,6 +759,18 @@ def verify_buffer_post(config, post_id):
     return last or {'status': 'unknown'}
 
 
+def next_cycle_delay(history, interval=1800):
+    """Resume at the reserved interval, rather than accumulating run-duration drift."""
+    stamps = [parse_history_timestamp(entry.get('timestamp')) for entry in history
+              if entry.get('buffer_submission') in {'accepted', 'failed_or_unknown', 'pending'}]
+    latest = max((stamp for stamp in stamps if stamp is not None), default=None)
+    if latest is None:
+        return interval
+    remaining = math.ceil(interval - (utcnow() - latest).total_seconds())
+    # If a cycle failed before submission, wait a full interval, not a hot retry loop.
+    return min(interval, max(60, remaining)) if remaining > 0 else interval
+
+
 def run_bot_once(config, dry_run=False):
     """Select one article, submit it to Buffer, and record the outcome."""
     history_days = get_env_int('HISTORY_DAYS', DEFAULT_HISTORY_DAYS, min_value=1, max_value=3650)

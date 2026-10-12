@@ -15,6 +15,17 @@ import bot
 class TestBotFunctions(unittest.TestCase):
     """Test bot functions without external API calls."""
 
+    def test_next_cycle_accounts_for_recent_submission_and_bounded_failure_delay(self):
+        now = bot.utcnow()
+        with patch('bot.utcnow', return_value=now):
+            for minutes, expected in [(0, 1800), (10, 1200), (29.5, 60), (31, 1800)]:
+                with self.subTest(minutes=minutes):
+                    entry = {'timestamp': (now - timedelta(minutes=minutes)).isoformat(),
+                             'buffer_submission': 'accepted'}
+                    self.assertEqual(bot.next_cycle_delay([entry]), expected)
+            self.assertEqual(bot.next_cycle_delay([]), 1800)
+            self.assertEqual(bot.next_cycle_delay([{'timestamp': 'invalid', 'buffer_submission': 'pending'}]), 1800)
+
     @patch('bot.post_to_buffer')
     @patch('bot.get_filtered_random_article')
     def test_recent_submission_skips_selection_and_publishing(self, select, publish):

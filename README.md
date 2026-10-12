@@ -17,7 +17,9 @@ GitHub Actions schedule → Wikipedia → Buffer → X
 
 Each run processes at most one article and exits. GitHub Actions checks every five
 minutes; publication history enforces at least 30 minutes between submissions.
-GitHub can delay or drop scheduled events, so exact publication times are not guaranteed;
+The optional hosted continuation also dispatches the next cycle directly when due,
+so regular operation does not depend only on cron. GitHub runner outages or delays
+can still affect timing;
 no personal computer, agent, web server, or database needs to stay running.
 
 ## Selection
@@ -55,11 +57,19 @@ Configure these under **Settings → Secrets and variables → Actions → Varia
 | `TOPIC_DAYS` | `14` | Topic overlap window; `0` disables it |
 | `RN_MINSIZE` | `8000` | Minimum size for random candidate queries |
 | `POST_INTERVAL` | `1800` | Minimum seconds between Buffer submissions |
+| `CONTINUOUS_PUBLISHING` | unset | Set to `true` to allow hosted continuation |
 
 For English physics articles, set `WIKI_LANGUAGE=en`, `ARTICLE_SOURCE=category`,
 and `WIKI_CATEGORY=Category:Physics`. Choose an existing category in your edition
 for history or another topic. Change the cron in
 [post-once.yml](.github/workflows/post-once.yml) to adjust frequency.
+
+To start hosted continuation, set `CONTINUOUS_PUBLISHING=true` and run the workflow
+with `keep_running=true`. Each cycle dispatches one successor; a separate job waits
+until the interval is due. Disable the variable and cancel the waiting run to stop
+continuation. Disable the workflow to pause both continuation and cron publishing.
+This occupies one hosted runner while waiting; review Actions usage before enabling
+it on a private repository. The live account's repository is public.
 
 ## Local development
 
