@@ -6,6 +6,7 @@ Tests that don't require API access.
 
 import unittest
 import tempfile
+from datetime import timedelta
 from unittest.mock import Mock, patch
 import requests
 import bot
@@ -13,6 +14,73 @@ import bot
 
 class TestBotFunctions(unittest.TestCase):
     """Test bot functions without external API calls."""
+
+    @patch('bot.post_to_buffer')
+    @patch('bot.get_filtered_random_article')
+    def test_recent_submission_skips_selection_and_publishing(self, select, publish):
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + '/history.json'
+            for status in ('accepted', 'pending', 'failed_or_unknown'):
+                entry = {'timestamp': (bot.utcnow() - timedelta(minutes=29)).isoformat(),
+                         'buffer_submission': status, 'wiki_language': 'tr'}
+                bot.save_history(path, [entry])
+                with patch.dict('os.environ', {'HISTORY_FILE': path, 'POST_INTERVAL': '1800'}):
+                    self.assertTrue(bot.run_bot_once({'article_source': 'random'}))
+                    self.assertEqual(bot.load_history(path), [entry])
+        select.assert_not_called()
+        publish.assert_not_called()
+
+    @patch('bot.post_to_buffer', return_value='new-post')
+    @patch('bot.get_filtered_random_article', return_value={
+        'title': 'New', 'url': 'https://tr.wikipedia.org/wiki/New', 'extract': 'Source facts'})
+    def test_elapsed_interval_publishes_once_and_reserves_before_mutation(self, select, publish):
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + '/history.json'
+            bot.save_history(path, [{'timestamp': (bot.utcnow() - timedelta(minutes=31)).isoformat(),
+                                     'buffer_submission': 'accepted'}])
+            def check_reservation(*args):
+                self.assertEqual(bot.load_history(path)[-1]['buffer_submission'], 'pending')
+                return 'new-post'
+            publish.side_effect = check_reservation
+            with patch.dict('os.environ', {'HISTORY_FILE': path, 'POST_INTERVAL': '1800'}):
+                self.assertTrue(bot.run_bot_once({'article_source': 'random'}))
+            self.assertEqual(bot.load_history(path)[-1]['buffer_submission'], 'accepted')
+        publish.assert_called_once()
+
+    @patch('bot.post_to_buffer')
+    def test_corrupt_history_blocks_publication(self, publish):
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + '/history.json'
+            with open(path, 'w') as handle:
+                handle.write('{broken')
+            with patch.dict('os.environ', {'HISTORY_FILE': path}):
+                with self.assertRaises(ValueError):
+                    bot.run_bot_once({})
+        publish.assert_not_called()
+
+    @patch('bot.requests.post')
+    def test_delivery_readback_records_sent_url(self, request):
+        expected = {'id': 'post-123', 'status': 'sent', 'sentAt': '2026-10-12T19:00:00Z',
+                    'externalLink': 'https://x.com/RastgeleWiki/status/123', 'error': None}
+        request.return_value.json.return_value = {'data': {'post': expected}}
+        self.assertEqual(bot.verify_buffer_post({'buffer_api_key': 'test-key'}, 'post-123'), expected)
+        request.assert_called_once()
+        self.assertNotIn('mutation', request.call_args.kwargs['json']['query'])
+
+    @patch('bot.requests.post')
+    def test_delivery_failure_never_resubmits(self, request):
+        request.return_value.json.return_value = {'data': {'post': {
+            'id': 'post-123', 'status': 'error', 'error': {'message': 'Disconnected'}}}}
+        self.assertEqual(bot.verify_buffer_post({'buffer_api_key': 'test-key'}, 'post-123')['status'], 'error')
+        request.assert_called_once()
+
+    @patch('time.sleep')
+    @patch('bot.requests.post')
+    def test_pending_delivery_readback_is_bounded(self, request, sleep):
+        request.return_value.json.return_value = {'data': {'post': {'status': 'sending'}}}
+        self.assertEqual(bot.verify_buffer_post({'buffer_api_key': 'test-key'}, 'post-123')['status'], 'sending')
+        self.assertEqual(request.call_count, 4)
+        self.assertEqual(sleep.call_count, 3)
 
     def test_turkish_summary_uses_single_weight_characters(self):
         summary = ('Rahibe Teresa Anıt Evi, Üsküp’te bulunan bir müzedir. '

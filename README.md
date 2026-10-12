@@ -15,7 +15,9 @@ GitHub Actions schedule → Wikipedia → Buffer → X
                  JSON history on bot-state
 ```
 
-Each run processes one article and exits. GitHub Actions runs every 30 minutes;
+Each run processes at most one article and exits. GitHub Actions checks every five
+minutes; publication history enforces at least 30 minutes between submissions.
+GitHub can delay or drop scheduled events, so exact publication times are not guaranteed;
 no personal computer, agent, web server, or database needs to stay running.
 
 ## Selection
@@ -32,6 +34,8 @@ to reduce duplicate posting. Popularity reflects Wikipedia views, not live news
 or X trends. By default, summaries come directly from Wikipedia. The optional
 `AI_SUMMARY_RUNNER` Actions variable supplies a private summary entrypoint and uses
 the `OPENROUTER_API_KEY` secret; forks do not need either.
+If the private AI entrypoint cannot produce a valid summary, it uses the original
+Wikipedia extract instead. AI quota or summary failures therefore do not stop publishing.
 
 ## Run your own
 
@@ -50,6 +54,7 @@ Configure these under **Settings → Secrets and variables → Actions → Varia
 | `HISTORY_DAYS` | `60` | Article repeat avoidance window |
 | `TOPIC_DAYS` | `14` | Topic overlap window; `0` disables it |
 | `RN_MINSIZE` | `8000` | Minimum size for random candidate queries |
+| `POST_INTERVAL` | `1800` | Minimum seconds between Buffer submissions |
 
 For English physics articles, set `WIKI_LANGUAGE=en`, `ARTICLE_SOURCE=category`,
 and `WIKI_CATEGORY=Category:Physics`. Choose an existing category in your edition
@@ -75,7 +80,9 @@ publishes one article using credentials from `.env` or the environment.
 ## Operations
 
 Actions restores and saves `.bot_state/history.json` on the `bot-state` branch.
-An accepted Buffer submission is not proof of delivery; check Buffer/X if needed.
+Actions reads the accepted post back from Buffer and records its delivery status,
+publication time, and external link in history. Acceptance alone is not counted
+as confirmed delivery; pending or failed delivery needs attention in Actions.
 Publishing requests are not retried automatically after an uncertain response.
 
 The hosted setup can run within free service allowances, subject to current

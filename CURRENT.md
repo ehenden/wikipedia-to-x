@@ -1,5 +1,25 @@
 # Current state
 
+## Publication recovery, 2026-10-12
+
+- Audit: scheduled run `38297022301` failed before Buffer because AI summaries
+  weighed 259 and 225 against the 210 maximum. Last accepted post was at
+  2026-10-11 22:44 UTC; only two scheduled runs occurred during the following day.
+- The workflow was active and Actions enabled. The previous cron configuration
+  did not prove actual half-hourly execution; the trigger gap remains provider-side.
+- Recovery: check every five minutes, with `POST_INTERVAL=1800` enforced from
+  restored history before any selection or AI request. Missed runs do not create
+  catch-up bursts. GitHub schedules remain best-effort, not an exact-time guarantee.
+- Private AI overlay: preserve the free model and bounded attempts, but fall back
+  to the original Wikipedia extract on invalid output, quota exhaustion or errors.
+- Write a pending history reservation before the publishing mutation. Accepted,
+  pending and uncertain submissions all enforce the interval; no blind resubmission.
+- Actions enables read-only Buffer delivery checks. History records sent status,
+  timestamp and destination URL; delivery failures are not silently treated as success.
+- Local validation: 34 mocked tests passed, including seven private-overlay checks.
+
+## Previous audit
+
 Audited on 2026-10-12 against GitHub main `309c46b` and Actions run `38231869184`.
 The code fix is committed in `e819c3b`; the private summary variable was updated
 and its content read back to confirm the update.

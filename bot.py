@@ -145,13 +145,11 @@ def load_history(path):
             data = json.load(handle)
         if isinstance(data, list):
             return data
-        logger.warning("History file has unexpected format; ignoring.")
-        return []
+        raise ValueError('Publication history must be a list; refusing to publish')
     except FileNotFoundError:
         return []
     except (OSError, json.JSONDecodeError) as e:
-        logger.warning(f"Failed to read history file: {e}")
-        return []
+        raise ValueError('Cannot read publication history; refusing to publish') from e
 
 
 def save_history(path, entries):
@@ -731,6 +729,36 @@ def post_to_buffer(config, post_text, image_url=None):
         return False
 
 
+def verify_buffer_post(config, post_id):
+    """Read delivery state without ever resubmitting an accepted mutation."""
+    query = '''query VerifyPost($input: PostInput!) {
+      post(input: $input) { id status sentAt externalLink error { message } }
+    }'''
+    last = {}
+    for attempt in range(4):
+        if attempt:
+            import time
+            time.sleep(5)
+        try:
+            response = requests.post('https://api.buffer.com',
+                headers={'Authorization': 'Bearer ' + config['buffer_api_key']},
+                json={'query': query, 'variables': {'input': {'id': post_id}}}, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if data.get('errors'):
+                logger.error('Buffer delivery query failed; accepted post will not be resubmitted')
+                return {'status': 'unknown'}
+            last = (data.get('data') or {}).get('post') or {}
+            logger.info('Buffer delivery id=%s status=%s sentAt=%s externalLink=%s',
+                        post_id, last.get('status'), last.get('sentAt'), last.get('externalLink'))
+            if last.get('status') in {'sent', 'error'} or last.get('error'):
+                return last
+        except (requests.RequestException, ValueError):
+            logger.error('Cannot verify Buffer delivery; accepted post will not be resubmitted')
+            return {'status': 'unknown'}
+    return last or {'status': 'unknown'}
+
+
 def run_bot_once(config, dry_run=False):
     """Select one article, submit it to Buffer, and record the outcome."""
     history_days = get_env_int('HISTORY_DAYS', DEFAULT_HISTORY_DAYS, min_value=1, max_value=3650)
@@ -738,6 +766,15 @@ def run_bot_once(config, dry_run=False):
     history_path = get_history_path()
 
     history = prune_history(load_history(history_path), history_days)
+    interval = get_env_int('POST_INTERVAL', 1800, min_value=60, max_value=86400)
+    if not dry_run:
+        reserved = [parse_history_timestamp(entry.get('timestamp')) for entry in history
+                    if entry.get('buffer_submission') in
+                    {'accepted', 'failed_or_unknown', 'pending'}]
+        latest = max((stamp for stamp in reserved if stamp is not None), default=None)
+        if latest and (utcnow() - latest).total_seconds() < interval:
+            logger.info('Publication interval has not elapsed; skipping without AI or Buffer calls')
+            return True
     recent_title_keys, recent_pageids, recent_tokens = build_history_indexes(history, topic_days)
 
     source = config.get('article_source', 'popular')
@@ -776,12 +813,24 @@ def run_bot_once(config, dry_run=False):
 
         return True
 
-    post_id = post_to_buffer(config, post_text, article.get('thumbnail_url'))
     entry = make_history_entry(article)
+    entry['buffer_submission'] = 'pending'
+    entry['buffer_post_id'] = None
+    history.append(entry)
+    save_history(history_path, history)
+    post_id = post_to_buffer(config, post_text, article.get('thumbnail_url'))
     entry['buffer_post_id'] = post_id or None
     entry['buffer_submission'] = 'accepted' if post_id else 'failed_or_unknown'
-    history.append(entry)
     save_history(history_path, prune_history(history, history_days))
+    if post_id and os.getenv('VERIFY_DELIVERY', '').lower() == 'true':
+        delivery = verify_buffer_post(config, post_id)
+        entry['buffer_delivery_status'] = delivery.get('status', 'unknown')
+        entry['published_url'] = delivery.get('externalLink')
+        entry['published_at'] = delivery.get('sentAt')
+        save_history(history_path, prune_history(history, history_days))
+        if delivery.get('status') != 'sent' or delivery.get('error'):
+            logger.error('Buffer accepted the post but delivery is not confirmed; do not resubmit')
+            return False
     return bool(post_id)
 
 
