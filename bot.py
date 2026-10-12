@@ -830,6 +830,11 @@ def run_bot_once(config, dry_run=False):
     entry['buffer_post_id'] = None
     history.append(entry)
     save_history(history_path, history)
+    if os.getenv('SYNC_HOSTED_RESERVATION', '').lower() == 'true':
+        # Persist the reservation before an irreversible provider call. If this
+        # fails, no post is submitted; future hosts can reconcile a pending entry.
+        from scripts.github_state import sync_history
+        sync_history('save')
     post_id = post_to_buffer(config, post_text, article.get('thumbnail_url'))
     entry['buffer_post_id'] = post_id or None
     entry['buffer_submission'] = 'accepted' if post_id else 'failed_or_unknown'

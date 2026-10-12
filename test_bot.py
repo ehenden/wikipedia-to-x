@@ -26,6 +26,37 @@ class TestBotFunctions(unittest.TestCase):
             self.assertEqual(bot.next_cycle_delay([]), 1800)
             self.assertEqual(bot.next_cycle_delay([{'timestamp': 'invalid', 'buffer_submission': 'pending'}]), 1800)
 
+    @patch('scripts.github_state.sync_history')
+    @patch('bot.post_to_buffer')
+    @patch('bot.get_filtered_random_article', return_value={
+        'title': 'Reserved', 'url': 'https://tr.wikipedia.org/wiki/Reserved', 'extract': 'Source'})
+    def test_hosted_reservation_precedes_mutation_and_failure_blocks_publishing(self, select, publish, sync):
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + '/history.json'
+            with patch.dict('os.environ', {'HISTORY_FILE': path, 'SYNC_HOSTED_RESERVATION': 'true'}):
+                sync.side_effect = requests.Timeout()
+                with self.assertRaises(requests.Timeout):
+                    bot.run_bot_once({'article_source': 'random'})
+                self.assertEqual(bot.load_history(path)[-1]['buffer_submission'], 'pending')
+        sync.assert_called_once_with('save')
+        publish.assert_not_called()
+
+    @patch('scripts.github_state.sync_history')
+    @patch('bot.post_to_buffer')
+    @patch('bot.get_filtered_random_article', return_value={
+        'title': 'Reserved', 'url': 'https://tr.wikipedia.org/wiki/Reserved', 'extract': 'Source'})
+    def test_hosted_mutation_only_runs_after_reservation_succeeds(self, select, publish, sync):
+        with tempfile.TemporaryDirectory() as directory:
+            path = directory + '/history.json'
+            def publish_after_sync(*args):
+                sync.assert_called_once_with('save')
+                self.assertEqual(bot.load_history(path)[-1]['buffer_submission'], 'pending')
+                return 'reserved-post'
+            publish.side_effect = publish_after_sync
+            with patch.dict('os.environ', {'HISTORY_FILE': path, 'SYNC_HOSTED_RESERVATION': 'true'}):
+                self.assertTrue(bot.run_bot_once({'article_source': 'random'}))
+        publish.assert_called_once()
+
     @patch('bot.post_to_buffer')
     @patch('bot.get_filtered_random_article')
     def test_recent_submission_skips_selection_and_publishing(self, select, publish):

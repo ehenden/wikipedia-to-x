@@ -90,6 +90,9 @@ publishes one article using credentials from `.env` or the environment.
 ## Operations
 
 Actions restores and saves `.bot_state/history.json` on the `bot-state` branch.
+Before submitting to Buffer, it persists a pending reservation on that branch.
+A failed reservation write blocks publishing; interrupted or uncertain provider
+calls remain reserved across runners.
 Actions reads the accepted post back from Buffer and records its delivery status,
 publication time, and external link in history. Acceptance alone is not counted
 as confirmed delivery; pending or failed delivery needs attention in Actions.
