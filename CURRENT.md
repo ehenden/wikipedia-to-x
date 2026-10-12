@@ -7,7 +7,7 @@
   2026-10-11 22:44 UTC; only two scheduled runs occurred during the following day.
 - The workflow was active and Actions enabled. The previous cron configuration
   did not prove actual half-hourly execution; the trigger gap remains provider-side.
-- Recovery: check every five minutes, with `POST_INTERVAL=1800` enforced from
+- Scheduler: check every five minutes, with `POST_INTERVAL=1800` enforced from
   restored history before any selection or AI request. Missed runs do not create
   catch-up bursts. GitHub schedules remain best-effort, not an exact-time guarantee.
 - Private AI overlay: preserve the free model and bounded attempts, but fall back
@@ -17,6 +17,19 @@
 - Actions enables read-only Buffer delivery checks. History records sent status,
   timestamp and destination URL; delivery failures are not silently treated as success.
 - Local validation: 34 mocked tests passed, including seven private-overlay checks.
+- Deployed code: `7e81c8a`; private summary overlay updated and read back.
+- Hosted Tests run `38298160738`: 27 repository tests passed.
+- Real publication run `38298296057`: succeeded. Buffer post
+  `6acd35c6ebe016d7f5fd1f8c` was read back as `sent` at 2026-10-12 19:32:23 UTC.
+  Destination: https://twitter.com/RastgeleWiki/status/2109728907960230266
+- Scheduler deployment: workflow commit `6036a7c` was saved through the signed-in
+  GitHub browser because CLI OAuth lacks `workflow` scope. The hosted file was
+  read back and matched the prepared workflow; the local checkout was fast-forwarded.
+- The workflow was explicitly enabled via API. Hosted cron is now `2/5 * * * *`;
+  `POST_INTERVAL=1800` and `VERIFY_DELIVERY=true` are passed to the bot.
+- Duplicate-prevention run `38298411768` succeeded: it skipped before selection,
+  AI or Buffer calls, and hosted history SHA stayed
+  `a502fc679f6a9c8047319332dc46ccf0c76d249b`.
 
 ## Previous audit
 
