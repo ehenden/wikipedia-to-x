@@ -44,6 +44,8 @@ jobs:
         run: python -c 'import os; from pathlib import Path; Path("ai_summary_runner.py").write_text(os.environ["AI_SUMMARY_RUNNER"])'
       - name: Post once
         env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_HOSTED_RESERVATION: 'true'
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
